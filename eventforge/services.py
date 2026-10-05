@@ -10,6 +10,7 @@ from eventforge.repositories import Repository
 from eventforge.resource_services.core import CoreResourceService
 from eventforge.resource_services.operations import OperationsResourceService
 from eventforge.resource_services.budget import BudgetResourceService
+from eventforge.resource_services.notifications import NotificationResourceService
 from eventforge.security import hash_password, issue_token, verify_password
 from eventforge.config import Settings
 
@@ -17,7 +18,7 @@ from eventforge.config import Settings
 class EventForgeService:
  """Handler-facing facade; resource rules live in specialized services."""
  def __init__(self,repository:Repository,settings:Settings)->None:
-  self._r=repository;self._s=settings;self._core=CoreResourceService(repository);self._operations=OperationsResourceService(repository);self._budget=BudgetResourceService(repository)
+  self._r=repository;self._s=settings;self._core=CoreResourceService(repository);self._operations=OperationsResourceService(repository);self._budget=BudgetResourceService(repository);self._notifications=NotificationResourceService(repository)
  def register(self,data:dict[str,Any])->dict[str,Any]:
   email=data.get('email');password=data.get('password')
   if not isinstance(email,str) or '@' not in email or not isinstance(password,str) or len(password)<8:raise ValidationError('email and password (8+ characters) are required')
@@ -99,4 +100,10 @@ class EventForgeService:
   allowed={'name','description','start_date','end_date','capacity','planned_budget'};out={k:v for k,v in d.items() if k in allowed}
   if 'planned_budget' in out:out['planned_budget']=Decimal(str(out['planned_budget']))
   return out
- def scan_notifications(self)->None:return None
+ # Notification/audit facade.  The scheduler uses this same facade as HTTP handlers.
+ def list_notifications(self,u:int,l:int,o:int)->dict[str,Any]:return serialize(self._notifications.list_notifications(str(u),limit=l,offset=o))
+ def notification(self,u:int,i:int)->dict[str,Any]:return serialize(self._notifications.get_notification(str(u),str(i)))
+ def mark_notification_read(self,u:int,i:int)->dict[str,Any]:return serialize(self._notifications.mark_notification_read(str(u),str(i),read_at=datetime.utcnow()))
+ def delete_notification(self,u:int,i:int)->None:self._notifications.delete_notification(str(u),str(i))
+ def list_audit_logs(self,u:int,l:int,o:int)->dict[str,Any]:return serialize(self._notifications.list_audit_logs(str(u),limit=l,offset=o))
+ def scan_notifications(self)->dict[str,Any]:return self._notifications.scan_due_task_notifications(scanned_at=datetime.utcnow())

@@ -12,5 +12,6 @@ class NotificationsHandler(AuthenticatedHandler):
   self.service.delete_notification(self.user_id,int(notification_id));self.set_status(204);self.finish()
 
 class AuditLogsHandler(AuthenticatedHandler):
- async def get(self,event_id):
-  limit,offset=pagination(self.request.arguments);self.write_json(self.service.list_audit_logs(self.user_id,int(event_id),limit,offset))
+ """List audit records owned by the authenticated event owner."""
+ async def get(self):
+  limit,offset=pagination(self.request.arguments);self.write_json(self.service.list_audit_logs(self.user_id,limit,offset))

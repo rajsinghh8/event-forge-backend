@@ -7,11 +7,11 @@ fixed-point strings so JSON encoding never converts a monetary value to float.
 
 from __future__ import annotations
 
-from collections.abc import ContextManager, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import NotRequired, Protocol, TypedDict
+from typing import ContextManager, NotRequired, Protocol, TypedDict
 
 from eventforge.errors import ConflictError, NotFoundError, ValidationError
 

@@ -10,4 +10,6 @@ class NotificationScheduler:
   try:
    result=self._service.scan_notifications()
    LOGGER.debug('notification scan completed: %s',result)
-  except (RuntimeError,ValueError) as exc:LOGGER.error('notification scan failed: %s',exc)
+  except Exception:
+   # A failed database scan must not terminate the recurring callback.
+   LOGGER.exception('notification scan failed')

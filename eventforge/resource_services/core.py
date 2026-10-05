@@ -7,9 +7,9 @@ through this service.
 
 from __future__ import annotations
 
-from collections.abc import ContextManager, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
-from typing import Protocol, TypeAlias
+from typing import ContextManager, Protocol, TypeAlias
 from contextlib import nullcontext
 from functools import wraps
 from datetime import date, datetime
