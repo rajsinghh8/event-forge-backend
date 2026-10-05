@@ -114,7 +114,32 @@ def openapi():
     deleted = dict(ok, **{"204": {"description": "Deleted; no response body"}})
     event_id = path_parameter("event_id")
     resource_id = path_parameter("id")
-    event_schema = {"type": "object", "required": ["name", "event_datetime"], "properties": {"name": {"type": "string"}, "event_datetime": {"type": "string", "format": "date-time"}, "status": {"type": "string", "enum": sorted(EVENT_STATUSES)}, "capacity": {"type": "integer"}, "budget_limit": {"type": "number"}}}
+    event_create_schema = {
+        "type": "object",
+        "required": ["name", "event_datetime", "venue"],
+        "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "event_datetime": {"type": "string", "format": "date-time"},
+            "venue": {"type": "string", "minLength": 1, "description": "Nonblank event venue"},
+            "status": {"type": "string", "enum": sorted(EVENT_STATUSES), "default": "DRAFT"},
+            "capacity": {"type": "integer", "minimum": 1},
+            "budget_limit": {"type": "number", "minimum": 0},
+            "description": {"type": "string"},
+        },
+    }
+    event_update_schema = {
+        "type": "object",
+        "description": "Supply one or more mutable event fields.",
+        "properties": event_create_schema["properties"],
+    }
+    event_query_parameters = pagination_parameters((
+        {"name": "status", "in": "query", "description": "Exact event status.", "schema": {"type": "string", "enum": sorted(EVENT_STATUSES)}},
+        {"name": "q", "in": "query", "description": "Nonblank text searched across name, venue, and description.", "schema": {"type": "string", "minLength": 1, "maxLength": 200}},
+        {"name": "date_from", "in": "query", "description": "Include events at or after this ISO-8601 date-time.", "schema": {"type": "string", "format": "date-time"}},
+        {"name": "date_to", "in": "query", "description": "Include events at or before this ISO-8601 date-time.", "schema": {"type": "string", "format": "date-time"}},
+        {"name": "sort", "in": "query", "description": "Whitelisted event sort field.", "schema": {"type": "string", "enum": ["id", "name", "event_datetime", "venue", "status", "created_at"], "default": "event_datetime"}},
+        {"name": "order", "in": "query", "schema": {"type": "string", "enum": ["asc", "desc"], "default": "asc"}},
+    ))
     paths = {
         "/health": {"get": {"summary": "Health check", "security": [], "responses": {"200": {"description": "Process is healthy"}}}},
         "/docs": {"get": {"summary": "Interactive API documentation", "security": [], "responses": {"200": {"description": "HTML documentation UI"}}}},
@@ -122,12 +147,12 @@ def openapi():
         "/api/auth/register": {"post": {"summary": "Register", "security": [], "requestBody": json_body({"type": "object", "required": ["email", "password", "display_name"]}), "responses": created}},
         "/api/auth/login": {"post": {"summary": "Log in", "security": [], "requestBody": json_body({"type": "object", "required": ["email", "password"]}), "responses": ok}},
         "/api/events": {
-            "get": {"summary": "List events", "parameters": pagination_parameters(({"name": "status", "in": "query", "schema": {"type": "string", "enum": sorted(EVENT_STATUSES)}},)), "responses": ok},
-            "post": {"summary": "Create event", "requestBody": json_body(event_schema), "responses": created},
+            "get": {"summary": "List events", "parameters": event_query_parameters, "responses": ok},
+            "post": {"summary": "Create event", "requestBody": json_body(event_create_schema), "responses": created},
         },
         "/api/events/{event_id}": {
             "get": {"summary": "Get event and financial totals", "parameters": [event_id], "responses": ok},
-            "put": {"summary": "Update event", "parameters": [event_id], "requestBody": json_body(event_schema), "responses": ok},
+            "put": {"summary": "Update event", "parameters": [event_id], "requestBody": json_body(event_update_schema), "responses": ok},
             "delete": {"summary": "Delete event and all children", "parameters": [event_id], "responses": deleted},
         },
     }
@@ -396,15 +421,56 @@ def create_app(db=None):
         with db.transaction() as connection:
             cursor = connection.cursor()
             if request.method == "GET":
+                allowed = {"status", "q", "date_from", "date_to", "sort", "order", "page", "page_size"}
+                unknown = set(request.query.keys()) - allowed
+                if unknown:
+                    fail(422, "VALIDATION_ERROR", "Unsupported query parameter", {"parameters": sorted(unknown)})
+
                 binds = {"user_id": user_id}
-                sql = "SELECT * FROM eventforge_events WHERE owner_id=:user_id"
-                if request.query.get("status"):
-                    status = request.query.status
+                clauses = ["owner_id=:user_id"]
+                status = request.query.get("status")
+                if status is not None:
                     if status not in EVENT_STATUSES:
                         fail(422, "VALIDATION_ERROR", "Invalid event status")
-                    sql += " AND status=:status"
+                    clauses.append("status=:status")
                     binds["status"] = status
-                return page(cursor, sql + " ORDER BY id", binds)
+
+                query_text = request.query.get("q")
+                if query_text is not None:
+                    if not query_text.strip() or len(query_text.strip()) > 200:
+                        fail(422, "VALIDATION_ERROR", "q must be nonblank and at most 200 characters")
+                    binds["q"] = "%" + query_text.strip().lower() + "%"
+                    clauses.append("(LOWER(name) LIKE :q OR LOWER(venue) LIKE :q OR LOWER(NVL(description,'')) LIKE :q)")
+
+                date_from = request.query.get("date_from")
+                date_to = request.query.get("date_to")
+                from_value = date_value(date_from, "date_from") if date_from is not None else None
+                to_value = date_value(date_to, "date_to") if date_to is not None else None
+                # A zone-less ISO value is interpreted as UTC so mixed ISO inputs
+                # remain comparable and are never allowed to trigger a server error.
+                if from_value is not None and from_value.tzinfo is None:
+                    from_value = from_value.replace(tzinfo=timezone.utc)
+                if to_value is not None and to_value.tzinfo is None:
+                    to_value = to_value.replace(tzinfo=timezone.utc)
+                if from_value is not None and to_value is not None and from_value > to_value:
+                    fail(422, "VALIDATION_ERROR", "date_from must not be after date_to")
+                if from_value is not None:
+                    clauses.append("event_datetime>=:date_from")
+                    binds["date_from"] = from_value
+                if to_value is not None:
+                    clauses.append("event_datetime<=:date_to")
+                    binds["date_to"] = to_value
+
+                sortable = {
+                    "id": "id", "name": "name", "event_datetime": "event_datetime",
+                    "venue": "venue", "status": "status", "created_at": "created_at",
+                }
+                sort = request.query.get("sort", "event_datetime")
+                order = request.query.get("order", "asc").lower()
+                if sort not in sortable or order not in {"asc", "desc"}:
+                    fail(422, "VALIDATION_ERROR", "Invalid event sort or order")
+                sql = "SELECT * FROM eventforge_events WHERE " + " AND ".join(clauses)
+                return page(cursor, sql + " ORDER BY " + sortable[sort] + " " + order.upper() + ", id", binds)
             data = parse_body()
             status = data.get("status", "DRAFT")
             if status not in EVENT_STATUSES:
@@ -412,7 +478,7 @@ def create_app(db=None):
             capacity = data.get("capacity")
             if capacity is not None and (type(capacity) is not int or capacity < 1):
                 fail(422, "VALIDATION_ERROR", "capacity must be a positive integer")
-            event_id = insert(cursor, "INSERT INTO eventforge_events (owner_id,name,event_datetime,venue,capacity,budget_limit,status,description) VALUES (:owner,:name,:time,:venue,:capacity,:budget,:status,:description)", {"owner": user_id, "name": required_text(data, "name"), "time": date_value(required_text(data, "event_datetime"), "event_datetime"), "venue": data.get("venue"), "capacity": capacity, "budget": decimal_value(data.get("budget_limit", 0), "budget_limit"), "status": status, "description": data.get("description")})
+            event_id = insert(cursor, "INSERT INTO eventforge_events (owner_id,name,event_datetime,venue,capacity,budget_limit,status,description) VALUES (:owner,:name,:time,:venue,:capacity,:budget,:status,:description)", {"owner": user_id, "name": required_text(data, "name"), "time": date_value(required_text(data, "event_datetime"), "event_datetime"), "venue": required_text(data, "venue"), "capacity": capacity, "budget": decimal_value(data.get("budget_limit", 0), "budget_limit"), "status": status, "description": data.get("description")})
             activity(cursor, event_id, user_id, "EVENT_CREATED")
             response.status = 201
             return event(cursor, event_id, user_id)

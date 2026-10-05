@@ -10,7 +10,7 @@
 | Remediation documentation | complete: exact `/api` contract and OpenAPI expanded |
 | Remediation verification/reports | complete with observed infrastructure limitation: reports regenerated from live refused requests and passing unit run |
 | Final Dockerfile verification | reopened: retry with available Docker toolchain/daemon |
-| Verifier remediation | in progress: active Bottle composition root, relational schema, exact API contract, live verification and reports | 
+| Verifier remediation | implementation complete: active routes/schema/docs remediated; verification and report refresh pending | 
 
 ## Verifier remediation decisions
 - The active `src/eventforge/app.py` is authoritative. Its invitation and task routes replace generic CRUD; each mutation writes activity in the same database transaction. RSVP status changes adjust the event's locked confirmed counter (including accepted create/update/delete) and write invitation notifications.
