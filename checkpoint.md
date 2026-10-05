@@ -2,7 +2,12 @@
 
 | Step | Status |
 |---|---|
-| 1 Design/scaffold | in progress |
+| 1 Design/scaffold | complete |
+| 2 Resource modules | complete (tasks, guests, budgets, schedule, vendors, notifications/audit) |
+| 3 Application/infra | complete |
+| 4 Compile | passed |
+| 5 pytest/boot/Docker verification | blocked by host: Python has no pip/dependencies and Docker daemon unavailable; 3 actual boot attempts captured psycopg missing |
+| 6 Reports | complete: tests-artifacts/api_test_report.xlsx and project_report.docx |
 
 ## Decisions
 - Flask 3.1 + psycopg 3 direct SQL, Python 3.13; package `eventforge`, port 8000.
@@ -10,3 +15,21 @@
 - PostgreSQL schema migration owns all 11 tables. UUIDs are generated in Python; numeric wire values are exact strings.
 - Offset pagination response: `{items,total,page,size}`. Validated query sort is per-resource allowlist.
 - Independent service groups: task; guest; budget+expense; schedule; vendor+payment; notification+audit. All use shared injected Database/Repositories conventions and migration contracts.
+
+## Unit status
+- Vendor + VendorPayment: implemented `eventforge/vendors.py` with injected-DB repository/service, `vendor_bp`/blueprint factory, owner-scoped vendor and payment CRUD/list endpoints, decimal-string projections, safe pagination, payment cap locking, deletion restrictions, and transactional audit rows.
+
+## Task resource status
+- Complete: added `eventforge/tasks` repository, service, and authenticated blueprint routes. Supports event-scoped task CRUD, pagination/filter/sort, dependency and completion validation, owner checks, and transactional audit-log writes.
+
+## Unit updates
+- Notification + AuditLog: implemented `eventforge/notifications.py` with owner-scoped list/acknowledgement and audit list routes, validated pagination/filtering/safe sorting, advisory-lock deduplicated due/overdue/90%-budget scanner, and a stoppable once-per-minute scanner adapter. The app factory must register `notification_audit_bp` and inject the shared database/service as documented in the module.
+
+## Unit status
+- Guests resource complete: added `eventforge/repositories/guest_repository.py`, `eventforge/services/guest_service.py`, and `eventforge/routes/guest_routes.py`. The blueprint factory must be registered by the shared application factory.
+
+## Unit status
+- BudgetCategory + Expense: implemented `budget_service.py` and `budget_routes.py`; includes owner-scoped CRUD, exact Decimal money, category projections, cap/unique/empty-delete rules, safe list filtering/sorting/pagination, transactional audit records, and deduplicated 90% threshold notifications.
+
+## Unit status
+- ScheduleItem: implemented `schedule_repository.py`, `schedule_service.py`, and `schedule_routes.py`. The injected-Database blueprint factory `create_schedule_blueprint` (alias `schedule_blueprint`) must be registered by the shared app factory. It provides owner-scoped CRUD, datetime/pagination/filter/sort validation, half-open overlap enforcement, explicit transactional audit writes, and 404-versus-403 event ownership checks.
