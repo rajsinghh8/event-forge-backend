@@ -1,0 +1,6 @@
+tornado==6.4.2
+bcrypt==4.2.1
+PyJWT==2.10.1
+mysql-connector-python==9.1.0
+openpyxl==3.1.5
+python-docx==1.1.2

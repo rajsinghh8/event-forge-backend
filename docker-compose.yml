@@ -1,0 +1,29 @@
+services:
+  eventforge:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: eventforge
+      MYSQL_USER: eventforge
+      MYSQL_PASSWORD: eventforge
+      JWT_SECRET: development-change-me
+    depends_on:
+      mysql:
+        condition: service_healthy
+  mysql:
+    image: mysql:8.4.3
+    environment:
+      MYSQL_DATABASE: eventforge
+      MYSQL_USER: eventforge
+      MYSQL_PASSWORD: eventforge
+      MYSQL_ROOT_PASSWORD: root-eventforge
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot-eventforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
