@@ -4,7 +4,17 @@
 |---|---|
 | 1 Design/scaffold | complete |
 | 2–10 Implementation | complete |
-| 11–17 Verify/reports | complete with environment limitations |
+| 11–17 Verify/reports | reopened: verifier gaps require live Oracle/API/docs/report/Docker remediation |
+| Remediation design | complete: replace Store with a single Oracle DB-API repository layer and fully typed Bottle resource routes | 
+| Remediation implementation | in progress | 
+| Remediation verification/reports | pending | 
+
+## Remediation decisions
+- The executable composition root will use one Oracle DB-API persistence module, initialized at app startup with idempotent schema DDL. Every mutation runs in a commit/rollback transaction with named SQL binds; event and child reads include owner/event predicates.
+- Canonical HTTP contract stays under `/api`; health/docs/spec stay public. Implement all declared event child resources and methods, including expense PUT/DELETE and notification PATCH. OpenAPI and docs mirror that exact route surface.
+- Data model uses Oracle tables for users, events, tasks/task_dependencies, invitations, categories/expenses, schedule entries, vendors/payments, notifications, and activity. Application rules are enforced in the repository transaction before commit.
+- Task dependency payload uses `dependency_ids` when creating/updating a task; all prerequisite records must belong to the same event, no self/cycle is permitted, and COMPLETED requires all prerequisites COMPLETED. Notifications are event-owner scoped and PATCH marks a notification read.
+- Existing historical reports are evidence of a failed environment boot and will be replaced only with observed, live results after a full Oracle-backed boot.
 
 ## Decisions
 - Bottle 0.13 synchronous WSGI, Python 3.13, direct `python-oracledb` with bound named SQL; Oracle owns persistence.
