@@ -1,0 +1,27 @@
+services:
+  oracle:
+    image: gvenzl/oracle-free:23-slim
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD:-EventForge_ChangeMe1}
+      APP_USER: eventforge
+      APP_USER_PASSWORD: ${ORACLE_APP_PASSWORD:-EventForge_ChangeMe1}
+    ports:
+      - "1521:1521"
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+  app:
+    build: .
+    environment:
+      PORT: 8000
+      JWT_SECRET: ${JWT_SECRET:-replace-this-development-secret}
+      ORACLE_DSN: oracle:1521/FREEPDB1
+      ORACLE_USER: eventforge
+      ORACLE_PASSWORD: ${ORACLE_APP_PASSWORD:-EventForge_ChangeMe1}
+    ports:
+      - "8000:8000"
+    depends_on:
+      oracle:
+        condition: service_healthy

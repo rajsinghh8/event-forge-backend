@@ -1,0 +1,1 @@
+"""Task resource domain package."""
