@@ -63,10 +63,10 @@ class OperationsRepository(Protocol):
     def create_schedule_item(self, event_id: int, values: ScheduleItemInput) -> Record: ...
 
     def update_schedule_item(
-        self, event_id: int, schedule_item_id: int, values: ScheduleItemInput
+        self, user_id: int, event_id: int, schedule_item_id: int, values: ScheduleItemInput
     ) -> Record: ...
 
-    def delete_schedule_item(self, event_id: int, schedule_item_id: int) -> None: ...
+    def delete_schedule_item(self, user_id: int, event_id: int, schedule_item_id: int) -> bool: ...
 
     def list_vendors(self, user_id: int, event_id: int) -> Sequence[Record]: ...
 
@@ -74,9 +74,9 @@ class OperationsRepository(Protocol):
 
     def create_vendor(self, event_id: int, values: VendorInput) -> Record: ...
 
-    def update_vendor(self, event_id: int, vendor_id: int, values: VendorInput) -> Record: ...
+    def update_vendor(self, user_id: int, event_id: int, vendor_id: int, values: VendorInput) -> Record: ...
 
-    def delete_vendor(self, event_id: int, vendor_id: int) -> None: ...
+    def delete_vendor(self, user_id: int, event_id: int, vendor_id: int) -> bool: ...
 
     def vendor_paid_total(self, vendor_id: int, *, exclude_payment_id: int | None = None) -> Decimal: ...
 
@@ -91,10 +91,10 @@ class OperationsRepository(Protocol):
     def create_vendor_payment(self, vendor_id: int, values: VendorPaymentInput) -> Record: ...
 
     def update_vendor_payment(
-        self, vendor_id: int, payment_id: int, values: VendorPaymentInput
+        self, user_id: int, event_id: int, vendor_id: int, payment_id: int, values: VendorPaymentInput
     ) -> Record: ...
 
-    def delete_vendor_payment(self, vendor_id: int, payment_id: int) -> None: ...
+    def delete_vendor_payment(self, user_id: int, event_id: int, vendor_id: int, payment_id: int) -> bool: ...
 
     def record_audit(
         self,
@@ -142,14 +142,15 @@ class OperationsResourceService:
             self._ensure_no_schedule_overlap(
                 user_id, event_id, payload["start_at"], payload["end_at"], exclude_id=schedule_item_id
             )
-            item = self.repository.update_schedule_item(event_id, schedule_item_id, payload)
+            item = self.repository.update_schedule_item(user_id, event_id, schedule_item_id, payload)
             self._audit(user_id, event_id, "schedule_item", item, "update")
         return dict(item)
 
     def delete_schedule_item(self, user_id: int, event_id: int, schedule_item_id: int) -> None:
         with self.repository.transaction():
             item = self._require_schedule_item(user_id, event_id, schedule_item_id)
-            self.repository.delete_schedule_item(event_id, schedule_item_id)
+            if not self.repository.delete_schedule_item(user_id, event_id, schedule_item_id):
+                raise NotFoundError("Schedule item not found")
             self._audit(user_id, event_id, "schedule_item", item, "delete")
 
     # Vendor contracts --------------------------------------------------------
@@ -177,14 +178,15 @@ class OperationsResourceService:
             paid = self.repository.vendor_paid_total(vendor_id)
             if payload["total_amount"] < paid:
                 raise ConflictError("Vendor total cannot be lower than payments already made")
-            updated = self.repository.update_vendor(event_id, vendor_id, payload)
+            updated = self.repository.update_vendor(user_id, event_id, vendor_id, payload)
             self._audit(user_id, event_id, "vendor", updated, "update")
         return self._vendor_dto(updated)
 
     def delete_vendor(self, user_id: int, event_id: int, vendor_id: int) -> None:
         with self.repository.transaction():
             vendor = self._require_vendor(user_id, event_id, vendor_id)
-            self.repository.delete_vendor(event_id, vendor_id)
+            if not self.repository.delete_vendor(user_id, event_id, vendor_id):
+                raise NotFoundError("Vendor not found")
             self._audit(user_id, event_id, "vendor", vendor, "delete")
 
     # Vendor payment contracts ------------------------------------------------
@@ -216,14 +218,15 @@ class OperationsResourceService:
             vendor = self._require_vendor(user_id, event_id, vendor_id)
             self._require_payment(user_id, event_id, vendor_id, payment_id)
             self._ensure_payment_within_total(vendor, vendor_id, payload["amount"], exclude_payment_id=payment_id)
-            payment = self.repository.update_vendor_payment(vendor_id, payment_id, payload)
+            payment = self.repository.update_vendor_payment(user_id, event_id, vendor_id, payment_id, payload)
             self._audit(user_id, event_id, "vendor_payment", payment, "update")
         return self._payment_dto(payment)
 
     def delete_vendor_payment(self, user_id: int, event_id: int, vendor_id: int, payment_id: int) -> None:
         with self.repository.transaction():
             payment = self._require_payment(user_id, event_id, vendor_id, payment_id)
-            self.repository.delete_vendor_payment(vendor_id, payment_id)
+            if not self.repository.delete_vendor_payment(user_id, event_id, vendor_id, payment_id):
+                raise NotFoundError("Vendor payment not found")
             self._audit(user_id, event_id, "vendor_payment", payment, "delete")
 
     # Validation and serialization -------------------------------------------

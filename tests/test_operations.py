@@ -13,19 +13,28 @@ class FakeOperationsRepository:
  def list_schedule_items(self,u,e):return self.items.copy() if self.get_event(u,e) else []
  def get_schedule_item(self,u,e,i):return next((x for x in self.items if x['id']==i and self.get_event(u,e)),None)
  def create_schedule_item(self,e,v):x={'id':len(self.items)+1,'event_id':e,**v};self.items.append(x);return x
- def update_schedule_item(self,e,i,v):x=self.get_schedule_item(1,e,i);x.update(v);return x
- def delete_schedule_item(self,e,i):self.items[:]=[x for x in self.items if x['id']!=i]
+ def update_schedule_item(self,u,e,i,v):x=self.get_schedule_item(u,e,i);x.update(v);return x
+ def delete_schedule_item(self,u,e,i):
+  x=self.get_schedule_item(u,e,i)
+  if x:self.items.remove(x)
+  return x is not None
  def list_vendors(self,u,e):return self.vendors.copy() if self.get_event(u,e) else []
  def get_vendor(self,u,e,i):return next((x for x in self.vendors if x['id']==i and self.get_event(u,e)),None)
  def create_vendor(self,e,v):x={'id':len(self.vendors)+1,'event_id':e,**v};self.vendors.append(x);return x
- def update_vendor(self,e,i,v):x=self.get_vendor(1,e,i);x.update(v);return x
- def delete_vendor(self,e,i):self.vendors[:]=[x for x in self.vendors if x['id']!=i]
+ def update_vendor(self,u,e,i,v):x=self.get_vendor(u,e,i);x.update(v);return x
+ def delete_vendor(self,u,e,i):
+  x=self.get_vendor(u,e,i)
+  if x:self.vendors.remove(x)
+  return x is not None
  def vendor_paid_total(self,v,exclude_payment_id=None):return sum((x['amount'] for x in self.payments if x['vendor_id']==v and x['id']!=exclude_payment_id),Decimal())
  def list_vendor_payments(self,u,e,v):return [x for x in self.payments if x['vendor_id']==v] if self.get_vendor(u,e,v) else []
  def get_vendor_payment(self,u,e,v,p):return next((x for x in self.payments if x['id']==p and x['vendor_id']==v and self.get_vendor(u,e,v)),None)
  def create_vendor_payment(self,v,values):x={'id':len(self.payments)+1,'vendor_id':v,**values};self.payments.append(x);return x
- def update_vendor_payment(self,v,p,values):x=self.get_vendor_payment(1,1,v,p);x.update(values);return x
- def delete_vendor_payment(self,v,p):self.payments[:]=[x for x in self.payments if x['id']!=p]
+ def update_vendor_payment(self,u,e,v,p,values):x=self.get_vendor_payment(u,e,v,p);x.update(values);return x
+ def delete_vendor_payment(self,u,e,v,p):
+  x=self.get_vendor_payment(u,e,v,p)
+  if x:self.payments.remove(x)
+  return x is not None
  def record_audit(self,**kwargs):self.audits.append(kwargs)
 
 class OperationsTests(unittest.TestCase):

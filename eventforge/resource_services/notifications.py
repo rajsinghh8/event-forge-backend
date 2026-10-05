@@ -39,6 +39,7 @@ class AuditLogDTO(TypedDict):
 
     id: str
     owner_id: str
+    event_id: str
     action: str
     entity_type: str
     entity_id: str
@@ -121,6 +122,10 @@ class NotificationAuditRepository(Protocol):
         self, owner_id: str, *, limit: int, offset: int
     ) -> AuditLogPageDTO: ...
 
+    def list_audit_logs_for_event_owner(
+        self, owner_id: str, event_id: str, *, limit: int, offset: int
+    ) -> AuditLogPageDTO: ...
+
     def list_tasks_due_between(
         self, *, starts_at: datetime, ends_at: datetime
     ) -> list[DueTaskDTO]:
@@ -187,8 +192,16 @@ class NotificationResourceService:
     def list_audit_logs(
         self, owner_id: str, *, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0
     ) -> AuditLogPageDTO:
+        """Optional global owner list, spanning all events the caller owns."""
         self._validate_page(limit=limit, offset=offset)
         return self._repository.list_audit_logs_for_owner(owner_id, limit=limit, offset=offset)
+
+    def list_event_audit_logs(
+        self, owner_id: str, event_id: str, *, limit: int = DEFAULT_PAGE_LIMIT, offset: int = 0
+    ) -> AuditLogPageDTO:
+        """List audit records for exactly one event, only when the caller owns it."""
+        self._validate_page(limit=limit, offset=offset)
+        return self._repository.list_audit_logs_for_event_owner(owner_id, event_id, limit=limit, offset=offset)
 
     def scan_due_task_notifications(self, *, scanned_at: datetime) -> ScanResultDTO:
         """Create task reminders due within 24 hours and overdue reminders.

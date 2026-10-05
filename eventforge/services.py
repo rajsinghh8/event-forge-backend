@@ -106,4 +106,5 @@ class EventForgeService:
  def mark_notification_read(self,u:int,i:int)->dict[str,Any]:return serialize(self._notifications.mark_notification_read(str(u),str(i),read_at=datetime.utcnow()))
  def delete_notification(self,u:int,i:int)->None:self._notifications.delete_notification(str(u),str(i))
  def list_audit_logs(self,u:int,l:int,o:int)->dict[str,Any]:return serialize(self._notifications.list_audit_logs(str(u),limit=l,offset=o))
+ def list_event_audit_logs(self,u:int,e:int,l:int,o:int)->dict[str,Any]:return serialize(self._notifications.list_event_audit_logs(str(u),str(e),limit=l,offset=o))
  def scan_notifications(self)->dict[str,Any]:return self._notifications.scan_due_task_notifications(scanned_at=datetime.utcnow())

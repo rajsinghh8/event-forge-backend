@@ -68,6 +68,7 @@ PATHS = {
  "/api/events": ["get", "post"], "/api/events/{eventId}": ["get", "put", "delete"],
  "/api/events/{eventId}/tasks": ["get", "post"], "/api/events/{eventId}/tasks/{taskId}": ["get", "put", "delete"],
  "/api/events/{eventId}/guests": ["get", "post"], "/api/events/{eventId}/guests/{guestId}": ["get", "put", "delete"],
+ "/api/events/{eventId}/audit-logs": ["get"],
  "/api/events/{eventId}/budget": ["get"],
  "/api/events/{eventId}/budget/categories": ["get", "post"], "/api/events/{eventId}/budget/categories/{categoryId}": ["get", "put", "delete"],
  "/api/events/{eventId}/budget-categories": ["get", "post"], "/api/events/{eventId}/budget-categories/{categoryId}": ["get", "put", "delete"],
@@ -111,6 +112,7 @@ def build_openapi() -> dict:
   "/api/events/{eventId}/tasks/{taskId}": _crud_item("Tasks", "TaskInput", [ID, TASK_ID]),
   "/api/events/{eventId}/guests": _crud_collection("Guests", "GuestInput", [ID, *PAGE]),
   "/api/events/{eventId}/guests/{guestId}": _crud_item("Guests", "GuestInput", [ID, GUEST_ID]),
+  "/api/events/{eventId}/audit-logs": {"get": operation("List audit logs for this owned event only", schema="AuditLogPage", parameters=[ID, *PAGE], errors=("Unauthorized", "NotFound", "InternalError"))},
   "/api/events/{eventId}/budget": {"get": operation("Get event budget aggregate", schema="BudgetAggregate", parameters=[ID], errors=("Unauthorized", "NotFound", "InternalError"))},
   "/api/events/{eventId}/budget/categories": _crud_collection("BudgetCategories", "BudgetCategoryInput", [ID]),
   "/api/events/{eventId}/budget/categories/{categoryId}": _crud_item("BudgetCategories", "BudgetCategoryUpdate", [ID, CATEGORY_ID]),
@@ -130,7 +132,7 @@ def build_openapi() -> dict:
    "put": operation("Mark notification as read", schema="Notification", parameters=[NOTIFICATION_ID], errors=("Unauthorized", "NotFound", "InternalError")),
    "delete": operation("Delete notification", success=204, parameters=[NOTIFICATION_ID], errors=("Unauthorized", "NotFound", "InternalError")),
   },
-  "/api/audit-logs": {"get": operation("List audit logs for the authenticated owner", schema="AuditLogPage", parameters=PAGE)},
+  "/api/audit-logs": {"get": operation("Optional global audit list across all events owned by the authenticated caller", schema="AuditLogPage", parameters=PAGE)},
  }
  return {"openapi": "3.0.3", "info": {"title": "EventForge API", "version": "1.0.0", "description": "Owner-scoped event planning API. JSON money values are fixed two-decimal strings."},
          "paths": paths, "components": {"securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT", "description": "Paste the JWT returned by register or login."}},
@@ -161,5 +163,5 @@ def _schemas() -> dict:
   "VendorInput": {"type": "object", "required": ["name", "total_amount"], "properties": {"name": {"type": "string", "minLength": 1}, "total_amount": money, "contact_name": {"type": "string", "nullable": True}, "contact_email": {"type": "string", "format": "email", "nullable": True}}}, "Vendor": {"allOf": [ref("VendorInput"), {"type": "object", "required": ["id", "event_id", "totalPaid", "outstanding"], "properties": {"id": identifier, "event_id": identifier, "totalPaid": money, "outstanding": money}}]}, "VendorsList": {"type": "array", "items": ref("Vendor")},
   "VendorPaymentInput": {"type": "object", "required": ["amount", "paid_on"], "properties": {"amount": money, "paid_on": {"type": "string", "format": "date"}, "reference": {"type": "string", "nullable": True}}}, "VendorPayment": {"allOf": [ref("VendorPaymentInput"), {"type": "object", "required": ["id", "vendor_id"], "properties": {"id": identifier, "vendor_id": identifier, "created_at": timestamp, "updated_at": timestamp}}]}, "VendorPaymentsList": {"type": "array", "items": ref("VendorPayment")},
   "Notification": {"type": "object", "required": ["id", "recipient_id", "kind", "title", "message", "is_read", "created_at"], "properties": {"id": identifier, "recipient_id": identifier, "event_id": {**identifier, "nullable": True}, "task_id": {**identifier, "nullable": True}, "kind": {"type": "string"}, "title": {"type": "string"}, "message": {"type": "string"}, "is_read": {"type": "boolean"}, "read_at": {**timestamp, "nullable": True}, "created_at": timestamp}}, "NotificationPage": page("Notification"),
-  "AuditLog": {"type": "object", "required": ["id", "owner_id", "action", "entity_type", "entity_id", "occurred_at"], "properties": {"id": identifier, "owner_id": identifier, "action": {"type": "string"}, "entity_type": {"type": "string"}, "entity_id": identifier, "actor_id": {**identifier, "nullable": True}, "occurred_at": timestamp, "details": {"type": "object", "additionalProperties": True}}}, "AuditLogPage": page("AuditLog"),
+  "AuditLog": {"type": "object", "required": ["id", "owner_id", "event_id", "action", "entity_type", "entity_id", "occurred_at"], "properties": {"id": identifier, "owner_id": identifier, "event_id": identifier, "action": {"type": "string"}, "entity_type": {"type": "string"}, "entity_id": identifier, "actor_id": {**identifier, "nullable": True}, "occurred_at": timestamp, "details": {"type": "object", "additionalProperties": True}}}, "AuditLogPage": page("AuditLog"),
  }

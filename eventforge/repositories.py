@@ -228,15 +228,37 @@ class Repository:
   if row: row['start_at']=datetime.fromisoformat(str(row['start_at']));row['end_at']=datetime.fromisoformat(str(row['end_at']))
   return row
  def create_schedule_item(self,event_id:Any,values:Mapping[str,object])->dict[str,Any]:return self._insert('schedule_items',{'event_id':event_id,**dict(values)})
- def update_schedule_item(self,event_id:Any,item_id:Any,values:Mapping[str,object])->dict[str,Any]:return self._update('schedule_items',item_id,dict(values))
- def delete_schedule_item(self,event_id:Any,item_id:Any)->None:self._delete('schedule_items',item_id)
+ def update_schedule_item(self,user_id:Any,event_id:Any,item_id:Any,values:Mapping[str,object])->dict[str,Any]:
+  return self._operations_update('schedule_items',user_id,event_id,item_id,values)
+ def delete_schedule_item(self,user_id:Any,event_id:Any,item_id:Any)->bool:
+  return self._operations_delete('schedule_items',user_id,event_id,item_id)
  def list_vendors(self,user_id:Any,event_id:Any)->list[dict[str,Any]]:
   self.get_event(user_id,event_id)
   with self._cursor() as q:q.execute('SELECT * FROM vendors WHERE event_id=%s ORDER BY id',(event_id,));return self._rows(q)
  def get_vendor(self,user_id:Any,event_id:Any,vendor_id:Any)->dict[str,Any]|None:return self._owned_operations_row('vendors',user_id,event_id,vendor_id)
  def create_vendor(self,event_id:Any,values:Mapping[str,object])->dict[str,Any]:return self._insert('vendors',{'event_id':event_id,**dict(values)})
- def update_vendor(self,event_id:Any,vendor_id:Any,values:Mapping[str,object])->dict[str,Any]:return self._update('vendors',vendor_id,dict(values))
- def delete_vendor(self,event_id:Any,vendor_id:Any)->None:self._delete('vendors',vendor_id)
+ def update_vendor(self,user_id:Any,event_id:Any,vendor_id:Any,values:Mapping[str,object])->dict[str,Any]:
+  return self._operations_update('vendors',user_id,event_id,vendor_id,values)
+ def delete_vendor(self,user_id:Any,event_id:Any,vendor_id:Any)->bool:
+  return self._operations_delete('vendors',user_id,event_id,vendor_id)
+ def _operations_update(self,table:str,user_id:Any,event_id:Any,item_id:Any,values:Mapping[str,object])->dict[str,Any]:
+  if not values: raise NotFoundError('no values supplied')
+  assignments=','.join(f'r.{key}=%s' for key in values)
+  # Ownership is part of the write itself, preventing a TOCTOU scope bypass.
+  sql=f'UPDATE {table} r JOIN events e ON e.id=r.event_id SET {assignments} WHERE r.id=%s AND r.event_id=%s AND e.owner_id=%s'
+  with self._cursor(write=True) as q:
+   q.execute(sql,(*values.values(),item_id,event_id,user_id))
+  # A no-op update may have a zero affected-row count, so re-read in the same scope.
+  row=self._owned_operations_row(table,user_id,event_id,item_id)
+  if row is None: raise NotFoundError(f'{table} resource was not found')
+  if table=='schedule_items':
+   row['start_at']=datetime.fromisoformat(str(row['start_at']));row['end_at']=datetime.fromisoformat(str(row['end_at']))
+  return row
+ def _operations_delete(self,table:str,user_id:Any,event_id:Any,item_id:Any)->bool:
+  # The owner and event constraints are intentionally in DELETE, not only a prior read.
+  with self._cursor(write=True) as q:
+   q.execute(f'DELETE r FROM {table} r JOIN events e ON e.id=r.event_id WHERE r.id=%s AND r.event_id=%s AND e.owner_id=%s',(item_id,event_id,user_id))
+   return q.rowcount == 1
  def vendor_paid_total(self,vendor_id:Any,*,exclude_payment_id:Any=None)->Decimal:
   sql='SELECT COALESCE(SUM(amount),0) FROM vendor_payments WHERE vendor_id=%s';params:list[Any]=[vendor_id]
   if exclude_payment_id is not None:sql+=' AND id<>%s';params.append(exclude_payment_id)
@@ -248,8 +270,26 @@ class Repository:
   if not self.get_vendor(user_id,event_id,vendor_id):return None
   with self._cursor() as q:q.execute('SELECT * FROM vendor_payments WHERE id=%s AND vendor_id=%s',(payment_id,vendor_id));return self._one(q)
  def create_vendor_payment(self,vendor_id:Any,values:Mapping[str,object])->dict[str,Any]:return self._insert('vendor_payments',{'vendor_id':vendor_id,**dict(values)})
- def update_vendor_payment(self,vendor_id:Any,payment_id:Any,values:Mapping[str,object])->dict[str,Any]:return self._update('vendor_payments',payment_id,dict(values))
- def delete_vendor_payment(self,vendor_id:Any,payment_id:Any)->None:self._delete('vendor_payments',payment_id)
+ def update_vendor_payment(self,user_id:Any,event_id:Any,vendor_id:Any,payment_id:Any,values:Mapping[str,object])->dict[str,Any]:
+  return self._payment_update(user_id,event_id,vendor_id,payment_id,values)
+ def delete_vendor_payment(self,user_id:Any,event_id:Any,vendor_id:Any,payment_id:Any)->bool:
+  return self._payment_delete(user_id,event_id,vendor_id,payment_id)
+ def _payment_update(self,user_id:Any,event_id:Any,vendor_id:Any,payment_id:Any,values:Mapping[str,object])->dict[str,Any]:
+  if not values: raise NotFoundError('no values supplied')
+  assignments=','.join(f'p.{key}=%s' for key in values)
+  sql=f'UPDATE vendor_payments p JOIN vendors v ON v.id=p.vendor_id JOIN events e ON e.id=v.event_id SET {assignments} WHERE p.id=%s AND p.vendor_id=%s AND v.event_id=%s AND e.owner_id=%s'
+  with self._cursor(write=True) as q:
+   q.execute(sql,(*values.values(),payment_id,vendor_id,event_id,user_id))
+   # Scope is checked again after the write; zero changed rows may be a valid no-op.
+   q.execute('SELECT p.* FROM vendor_payments p JOIN vendors v ON v.id=p.vendor_id JOIN events e ON e.id=v.event_id WHERE p.id=%s AND p.vendor_id=%s AND v.event_id=%s AND e.owner_id=%s',(payment_id,vendor_id,event_id,user_id))
+   row=self._one(q)
+  if row is None: raise NotFoundError('vendor payment was not found')
+  return row
+ def _payment_delete(self,user_id:Any,event_id:Any,vendor_id:Any,payment_id:Any)->bool:
+  # Payment writes include payment, vendor, event, and owner predicates atomically.
+  with self._cursor(write=True) as q:
+   q.execute('DELETE p FROM vendor_payments p JOIN vendors v ON v.id=p.vendor_id JOIN events e ON e.id=v.event_id WHERE p.id=%s AND p.vendor_id=%s AND v.event_id=%s AND e.owner_id=%s',(payment_id,vendor_id,event_id,user_id))
+   return q.rowcount == 1
  def record_audit(self,*,user_id:Any,event_id:Any,entity_type:str,entity_id:int,action:str,details:Mapping[str,object]|None=None)->None:
   with self._cursor(write=True) as q:q.execute('INSERT INTO audit_logs(event_id,actor_user_id,resource_type,resource_id,action,details) VALUES(%s,%s,%s,%s,%s,%s)',(event_id,user_id,entity_type,entity_id,action,json.dumps(dict(details or {}),default=str)))
 
@@ -285,7 +325,7 @@ class Repository:
   if isinstance(details,str):
    try:details=json.loads(details)
    except json.JSONDecodeError:details={}
-  result={'id':str(row['id']),'owner_id':str(row['owner_id']),'action':row['action'],'entity_type':row.get('resource_type') or 'unknown','entity_id':str(row.get('resource_id') or ''),'occurred_at':self._as_datetime(row['created_at']),'actor_id':None if row.get('actor_user_id') is None else str(row['actor_user_id'])}
+  result={'id':str(row['id']),'owner_id':str(row['owner_id']),'event_id':str(row['event_id']),'action':row['action'],'entity_type':row.get('resource_type') or 'unknown','entity_id':str(row.get('resource_id') or ''),'occurred_at':self._as_datetime(row['created_at']),'actor_id':None if row.get('actor_user_id') is None else str(row['actor_user_id'])}
   if isinstance(details,dict):result['details']=details
   return result
  def list_audit_logs_for_owner(self,owner_id:str,*,limit:int,offset:int)->dict[str,Any]:
@@ -293,6 +333,14 @@ class Repository:
   with self._cursor() as q:
    q.execute('SELECT COUNT(*)'+join,(owner_id,));total=int(q.fetchone()[0])
    q.execute('SELECT a.*,e.owner_id AS owner_id'+join+' ORDER BY a.created_at DESC,a.id DESC LIMIT %s OFFSET %s',(owner_id,limit,offset));items=[self._audit_dto(row) for row in self._rows(q)]
+  return {'items':items,'total':total,'limit':limit,'offset':offset}
+ def list_audit_logs_for_event_owner(self,owner_id:str,event_id:str,*,limit:int,offset:int)->dict[str,Any]:
+  # Validate the event scope even if it has no audit rows, so inaccessible IDs are 404.
+  self.get_event(owner_id,event_id)
+  join=' FROM audit_logs a JOIN events e ON e.id=a.event_id WHERE a.event_id=%s AND e.owner_id=%s'
+  with self._cursor() as q:
+   q.execute('SELECT COUNT(*)'+join,(event_id,owner_id));total=int(q.fetchone()[0])
+   q.execute('SELECT a.*,e.owner_id AS owner_id'+join+' ORDER BY a.created_at DESC,a.id DESC LIMIT %s OFFSET %s',(event_id,owner_id,limit,offset));items=[self._audit_dto(row) for row in self._rows(q)]
   return {'items':items,'total':total,'limit':limit,'offset':offset}
  def _due_task_dto(self,row:dict[str,Any])->dict[str,Any]:
   return {'id':str(row['id']),'recipient_id':str(row['recipient_id']),'title':row['title'],'due_at':self._as_datetime(row['due_at']),'event_id':str(row['event_id'])}

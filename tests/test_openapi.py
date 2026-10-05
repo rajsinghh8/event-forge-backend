@@ -26,7 +26,8 @@ class OpenApiTests(unittest.TestCase):
   self.assertIn('/api/events/{eventId}/budget-categories', paths)
   self.assertIn('/api/events/{eventId}/expenses', paths)
   self.assertIn('/api/audit-logs', paths)
-  self.assertNotIn('/api/events/{eventId}/audit-logs', paths)
+  self.assertIn('/api/events/{eventId}/audit-logs', paths)
+  self.assertEqual({'eventId', 'limit', 'offset'}, {parameter['name'] for parameter in paths['/api/events/{eventId}/audit-logs']['get']['parameters']})
   self.assertNotIn('/api/events/{eventId}/budget-categories/{categoryId}/expenses', paths)
 
  def test_contract_includes_bodies_parameters_and_error_envelopes(self):

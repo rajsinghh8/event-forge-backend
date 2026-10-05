@@ -12,6 +12,11 @@ class NotificationsHandler(AuthenticatedHandler):
   self.service.delete_notification(self.user_id,int(notification_id));self.set_status(204);self.finish()
 
 class AuditLogsHandler(AuthenticatedHandler):
- """List audit records owned by the authenticated event owner."""
+ """Optional global list of audit records across events owned by the caller."""
  async def get(self):
   limit,offset=pagination(self.request.arguments);self.write_json(self.service.list_audit_logs(self.user_id,limit,offset))
+
+class EventAuditLogsHandler(AuthenticatedHandler):
+ """List audit records for one owned event; no cross-event records are exposed."""
+ async def get(self,event_id):
+  limit,offset=pagination(self.request.arguments);self.write_json(self.service.list_event_audit_logs(self.user_id,int(event_id),limit,offset))

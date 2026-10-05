@@ -16,6 +16,9 @@ class FakeNotificationRepository:
   return item
  def delete_notification_for_recipient(self,recipient_id,notification_id):return recipient_id == 7 and str(notification_id) in self.notifications
  def list_audit_logs_for_owner(self,owner_id,*,limit,offset):return {'items':[],'total':0,'limit':limit,'offset':offset}
+ def list_audit_logs_for_event_owner(self,owner_id,event_id,*,limit,offset):
+  if (owner_id,event_id) != ('7','3'): raise NotFoundError('event not found')
+  return {'items':[{'id':'1','event_id':'3'}],'total':1,'limit':limit,'offset':offset}
  def list_tasks_due_between(self,*,starts_at,ends_at):return [{'id':'11','recipient_id':'7','title':'Book hall','due_at':ends_at,'event_id':'3'}]
  def list_overdue_tasks(self,*,as_of):return [{'id':'12','recipient_id':'7','title':'Send invites','due_at':as_of-timedelta(seconds=1),'event_id':'3'}]
  def create_notification_for_new_source(self,notification):
@@ -35,5 +38,9 @@ class NotificationResourceServiceTests(unittest.TestCase):
   with self.assertRaises(NotFoundError):self.service.get_notification(8,'1')
   with self.assertRaises(ValidationError):self.service.list_notifications(7,limit=101)
   self.assertTrue(self.service.mark_notification_read(7,'1',read_at=datetime.now())['is_read'])
+ def test_event_audit_list_is_event_and_owner_scoped(self):
+  page=self.service.list_event_audit_logs('7','3',limit=20,offset=0)
+  self.assertEqual(page['items'][0]['event_id'],'3')
+  with self.assertRaises(NotFoundError):self.service.list_event_audit_logs('8','3',limit=20,offset=0)
 
 if __name__ == '__main__':unittest.main()
