@@ -2,7 +2,7 @@
 
 | Step | Status |
 |---|---|
-| 1 Design/scaffold | complete |
+| 1 Design/scaffold | complete; resumed verifier repair plan recorded |\n| Repair group implementation | in progress: task, guest, budget, schedule, vendor/payment, notifications/audit dispatched independently |\n| Factory/OpenAPI/integration tests | pending after resource repairs |\n| Verification/reports/Docker | pending live rerun |\n\n## Resume repair contracts\n- All resource mutation audits use `create`, `update`, `delete`, or `status_change`; error responses use the five-key envelope supplied by app-level handlers.\n- All business routes require `eventforge.security.require_auth`; `/health`, `/docs`, and `/openapi.json` are public. Task routes are registered only at `/events/<event_id>/tasks`.\n- Nested ownership means missing resource is 404; an existing event owned by another user is 403. Shared persistence calls must use the active transaction cursor/connection.\n- Shared API contract remains Flask/Postgres/JWT on port 8000; tests will run against PostgreSQL and generate observed live-request artifacts.
 | 2 Resource modules | complete (tasks, guests, budgets, schedule, vendors, notifications/audit) |
 | 3 Application/infra | complete |
 | 4 Compile | passed |
