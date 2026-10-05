@@ -6,7 +6,8 @@
 | 2–10 Implementation | complete |
 | 11–17 Verify/reports | reopened: verifier gaps require live Oracle/API/docs/report/Docker remediation |
 | Remediation design | complete: replace Store with a single Oracle DB-API repository layer and fully typed Bottle resource routes | 
-| Remediation implementation | in progress | 
+| Remediation implementation | implemented; review/fix loop in progress |
+| Remediation documentation | complete; contract review pending |
 | Remediation verification/reports | pending | 
 
 ## Remediation decisions
