@@ -7,5 +7,7 @@ class NotificationScheduler:
  def start(self):self._callback.start()
  def stop(self):self._callback.stop()
  async def _scan(self):
-  try:self._service.scan_notifications()
+  try:
+   result=self._service.scan_notifications()
+   LOGGER.debug('notification scan completed: %s',result)
   except (RuntimeError,ValueError) as exc:LOGGER.error('notification scan failed: %s',exc)

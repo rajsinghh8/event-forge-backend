@@ -7,9 +7,26 @@ through this service.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import ContextManager, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Protocol, TypeAlias
+from contextlib import nullcontext
+from functools import wraps
+from datetime import date, datetime
+
+
+def _transactional(method):
+    """Keep persistence, audit, and notification writes in one unit of work."""
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        transaction = getattr(self._repository, "transaction", None)
+        with transaction() if callable(transaction) else nullcontext():
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
+def _mutation(method):
+    return _transactional(method)
 
 from eventforge import errors
 
@@ -71,6 +88,7 @@ class CoreResourceService:
         self._repository = repository
 
     # Events
+    @_mutation
     def create_event(self, user_id: str, values: Mapping[str, object]) -> DTO:
         payload = dict(values)
         event = self._repository.create_event(user_id, payload)
@@ -86,17 +104,20 @@ class CoreResourceService:
         items, total = self._repository.list_events(user_id, limit=limit, offset=offset)
         return {"items": [_dto(item) for item in items], "total": total, "limit": limit, "offset": offset}
 
+    @_mutation
     def update_event(self, user_id: str, event_id: str, values: Mapping[str, object]) -> DTO:
         result = _dto(self._repository.update_event(user_id, event_id, dict(values)))
         self._record(user_id, "event.updated", "event", event_id, result)
         return result
 
+    @_mutation
     def delete_event(self, user_id: str, event_id: str) -> None:
         self._repository.get_event(user_id, event_id)
         self._repository.delete_event(user_id, event_id)
         self._record(user_id, "event.deleted", "event", event_id, {"id": event_id})
 
     # Tasks
+    @_mutation
     def create_task(self, user_id: str, event_id: str, values: Mapping[str, object]) -> DTO:
         self._repository.get_event(user_id, event_id)
         payload = dict(values)
@@ -116,6 +137,7 @@ class CoreResourceService:
         self._repository.get_event(user_id, event_id)
         return [_dto(task) for task in self._repository.list_tasks(user_id, event_id)]
 
+    @_mutation
     def update_task(self, user_id: str, event_id: str, task_id: str, values: Mapping[str, object]) -> DTO:
         current = _dto(self._repository.get_task(user_id, event_id, task_id))
         payload = dict(values)
@@ -131,14 +153,16 @@ class CoreResourceService:
         self._record(user_id, "task.updated", "task", task_id, result)
         return result
 
+    @_mutation
     def delete_task(self, user_id: str, event_id: str, task_id: str) -> None:
         self._repository.get_task(user_id, event_id, task_id)
         if self._repository.list_task_dependents(user_id, event_id, task_id):
             raise errors.ConflictError("task cannot be deleted while another task depends on it")
         self._repository.delete_task(user_id, event_id, task_id)
-        self._record(user_id, "task.deleted", "task", task_id, {"id": task_id})
+        self._record(user_id, "task.deleted", "task", task_id, {"id": task_id, "event_id": event_id})
 
     # Guests
+    @_mutation
     def create_guest(self, user_id: str, event_id: str, values: Mapping[str, object]) -> DTO:
         event = _dto(self._repository.get_event(user_id, event_id))
         payload = dict(values)
@@ -157,6 +181,7 @@ class CoreResourceService:
         items, total = self._repository.list_guests(user_id, event_id, limit=limit, offset=offset)
         return {"items": [_dto(item) for item in items], "total": total, "limit": limit, "offset": offset}
 
+    @_mutation
     def update_guest(self, user_id: str, event_id: str, guest_id: str, values: Mapping[str, object]) -> DTO:
         event = _dto(self._repository.get_event(user_id, event_id))
         current = _dto(self._repository.get_guest(user_id, event_id, guest_id))
@@ -167,10 +192,11 @@ class CoreResourceService:
         self._record(user_id, "guest.updated", "guest", guest_id, result)
         return result
 
+    @_mutation
     def delete_guest(self, user_id: str, event_id: str, guest_id: str) -> None:
         self._repository.get_guest(user_id, event_id, guest_id)
         self._repository.delete_guest(user_id, event_id, guest_id)
-        self._record(user_id, "guest.deleted", "guest", guest_id, {"id": guest_id})
+        self._record(user_id, "guest.deleted", "guest", guest_id, {"id": guest_id, "event_id": event_id})
 
     def _record(self, user_id: str, action: str, resource: str, resource_id: str, details: Mapping[str, object]) -> None:
         safe = _dto(details)
@@ -240,6 +266,8 @@ def _pagination(limit: int, offset: int) -> None:
 
 def _id(values: Mapping[str, object]) -> str:
     value = values.get("id")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
     if not isinstance(value, str) or not value:
         raise errors.ValidationError("repository returned a resource without an id")
     return value
