@@ -8,6 +8,7 @@ from flask import Blueprint, Response, g, jsonify, request
 from .errors import AuthenticationError, ValidationError
 from .schedule_repository import ScheduleRepository
 from .schedule_service import ScheduleService
+from .security import require_auth
 
 
 def create_schedule_blueprint(database: Any, service: ScheduleService | None = None) -> Blueprint:
@@ -33,6 +34,7 @@ def create_schedule_blueprint(database: Any, service: ScheduleService | None = N
         return parsed
 
     @blueprint.get("/events/<uuid:event_id>/schedule-items")
+    @require_auth
     def list_schedule_items(event_id: str) -> Response:
         allowed = {"page", "size", "sort", "text", "name", "startDate", "endDate"}
         unknown = set(request.args) - allowed
@@ -41,18 +43,22 @@ def create_schedule_blueprint(database: Any, service: ScheduleService | None = N
         return jsonify(schedule_service.list(user_id(), event_id, request.args.to_dict(flat=True)))
 
     @blueprint.post("/events/<uuid:event_id>/schedule-items")
+    @require_auth
     def create_schedule_item(event_id: str) -> tuple[Response, int]:
         return jsonify(schedule_service.create(user_id(), event_id, body())), 201
 
     @blueprint.get("/events/<uuid:event_id>/schedule-items/<uuid:schedule_item_id>")
+    @require_auth
     def get_schedule_item(event_id: str, schedule_item_id: str) -> Response:
         return jsonify(schedule_service.get(user_id(), event_id, schedule_item_id))
 
     @blueprint.patch("/events/<uuid:event_id>/schedule-items/<uuid:schedule_item_id>")
+    @require_auth
     def update_schedule_item(event_id: str, schedule_item_id: str) -> Response:
         return jsonify(schedule_service.update(user_id(), event_id, schedule_item_id, body()))
 
     @blueprint.delete("/events/<uuid:event_id>/schedule-items/<uuid:schedule_item_id>")
+    @require_auth
     def delete_schedule_item(event_id: str, schedule_item_id: str) -> tuple[Response, int]:
         schedule_service.delete(user_id(), event_id, schedule_item_id)
         return "", 204

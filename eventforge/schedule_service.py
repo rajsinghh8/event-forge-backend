@@ -8,7 +8,12 @@ import json
 from typing import Any
 from uuid import UUID, uuid4
 
-from .errors import BusinessRuleError, ForbiddenError, NotFoundError, ValidationError
+from .errors import AuthorizationError, NotFoundError, ValidationError, ConflictError
+
+# Keep the resource's ownership/error semantics explicit without depending on
+# error aliases that are not part of the shared application contract.
+ForbiddenError = AuthorizationError
+BusinessRuleError = ConflictError
 from .schedule_repository import ScheduleRepository
 
 
@@ -31,10 +36,23 @@ class ScheduleService:
 
     @contextmanager
     def _cursor(self, *, write: bool = False) -> Iterator[Any]:
-        manager = self._database.transaction() if write else self._database.connection()
-        with manager as connection:
-            # Database implementations may yield either a connection or a cursor.
-            if hasattr(connection, "execute"):
+        """Yield the actual DB cursor for a read or atomic write operation.
+
+        ``Database`` exposes ``cursor()`` for reads and ``transaction()`` for
+        writes.  The latter yields a connection, so it must be converted to a
+        cursor before repository methods call ``fetchone``/``fetchall``.  In
+        particular, a psycopg connection also has ``execute``, which is not a
+        reliable way to distinguish it from a cursor.
+        """
+        if not write:
+            with self._database.cursor() as cursor:
+                yield cursor
+            return
+
+        with self._database.transaction() as connection:
+            # Test adapters may yield a cursor directly; the production
+            # Database yields a psycopg connection.
+            if hasattr(connection, "fetchone") and hasattr(connection, "fetchall"):
                 yield connection
             else:
                 with connection.cursor() as cursor:

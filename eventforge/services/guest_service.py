@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from eventforge.errors import ConflictError, ForbiddenError, NotFoundError, ValidationError
+from eventforge.errors import AuthorizationError, ConflictError, NotFoundError, ValidationError
 from eventforge.repositories.guest_repository import GuestRepository
 
 
@@ -89,7 +89,7 @@ class GuestService:
         if owner_id is None:
             raise NotFoundError("Event not found")
         if owner_id != user_id:
-            raise ForbiddenError("You do not have access to this event")
+            raise AuthorizationError("You do not have access to this event")
 
     def _assert_capacity(self, conn: Any, event_id: UUID) -> None:
         locked = self._repository.lock_event_and_count_accepted(conn, event_id)

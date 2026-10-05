@@ -1,10 +1,18 @@
 """Budget-category and expense business operations (direct parameterized psycopg SQL)."""
+from contextlib import contextmanager
+from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 import json
 from datetime import date
+from typing import Any, Iterator
 
-from .errors import ValidationError, NotFoundError, ForbiddenError, BusinessRuleError
+from .errors import AuthorizationError, ConflictError, NotFoundError, ValidationError
+
+# These aliases describe the resource-level intent while using the shared API
+# error classes, whose handlers provide the standard response envelope.
+ForbiddenError = AuthorizationError
+BusinessRuleError = ConflictError
 
 
 def _decimal(value, field, positive=False):
@@ -29,11 +37,67 @@ def _required(payload, key):
 class BudgetService:
     """Owner-scoped category and expense operations. All writes are atomic."""
     def __init__(self, db, audit_writer=None, event_service=None):
-        self.db, self.audit_writer, self.event_service = db, audit_writer, event_service
+        self._database, self.audit_writer, self.event_service = db, audit_writer, event_service
+        # Database's convenience methods open a new connection per call.  Keep the
+        # connection yielded by a mutation transaction in context-local storage so
+        # category/expense writes, audit rows, and notifications commit or roll back
+        # together without leaking a connection across concurrent requests.
+        self._connection: ContextVar[Any | None] = ContextVar("budget_connection", default=None)
+
+    @contextmanager
+    def _transaction(self) -> Iterator[None]:
+        with self._database.transaction() as connection:
+            token = self._connection.set(connection)
+            try:
+                yield
+            finally:
+                self._connection.reset(token)
+
+    def _fetchone(self, query, params=()):
+        connection = self._connection.get()
+        if connection is None:
+            return self._database.fetchone(query, params)
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            return cursor.fetchone()
+
+    def _fetchall(self, query, params=()):
+        connection = self._connection.get()
+        if connection is None:
+            return self._database.fetchall(query, params)
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            return cursor.fetchall()
+
+    def _execute(self, query, params=()):
+        connection = self._connection.get()
+        if connection is None:
+            return self._database.execute(query, params)
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+
+    @staticmethod
+    def _pagination(query):
+        try:
+            page, size = int(query.get("page", 1)), int(query.get("size", 20))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("page and size must be integers") from exc
+        if page < 1 or not 1 <= size <= 100:
+            raise ValidationError("Invalid page or size")
+        return page, size
+
+    def _planned_total(self, event_id, excluded_category_id=None):
+        query = "SELECT COALESCE(SUM(planned_amount), 0) AS planned FROM budget_categories WHERE event_id=%s"
+        params = (event_id,)
+        if excluded_category_id is not None:
+            query += " AND id<>%s"
+            params += (excluded_category_id,)
+        row = self._fetchone(query, params)
+        return Decimal(str(row["planned"] or 0))
 
     def _event(self, owner_id, event_id, lock=False):
         suffix = " FOR UPDATE" if lock else ""
-        event = self.db.fetchone(f"SELECT id, owner_id, planned_budget FROM events WHERE id=%s{suffix}", (event_id,))
+        event = self._fetchone(f"SELECT id, owner_id, planned_budget FROM events WHERE id=%s{suffix}", (event_id,))
         if not event: raise NotFoundError("Event not found")
         if str(event["owner_id"]) != str(owner_id): raise ForbiddenError("Event is not owned by the authenticated user")
         return event
@@ -41,7 +105,7 @@ class BudgetService:
     def _category(self, owner_id, event_id, category_id, lock=False):
         self._event(owner_id, event_id, lock)
         suffix = " FOR UPDATE" if lock else ""
-        row = self.db.fetchone(f"SELECT * FROM budget_categories WHERE id=%s AND event_id=%s{suffix}", (category_id, event_id))
+        row = self._fetchone(f"SELECT * FROM budget_categories WHERE id=%s AND event_id=%s{suffix}", (category_id, event_id))
         if not row: raise NotFoundError("Budget category not found")
         return row
 
@@ -57,24 +121,26 @@ class BudgetService:
         d = dict(row); d["amount"] = str(d["amount"]); return d
 
     def _actual(self, category_id):
-        row = self.db.fetchone("SELECT COALESCE(SUM(amount), 0) AS actual FROM expenses WHERE budget_category_id=%s", (category_id,))
+        row = self._fetchone("SELECT COALESCE(SUM(amount), 0) AS actual FROM expenses WHERE budget_category_id=%s", (category_id,))
         return Decimal(str(row["actual"] or 0))
 
     def _audit(self, event_id, owner_id, resource, resource_id, action, details):
-        if self.audit_writer:
-            return self.audit_writer.record(event_id, owner_id, resource, resource_id, action, details)
-        self.db.execute("INSERT INTO audit_logs (id,event_id,actor_user_id,resource_type,resource_id,action,details,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,NOW())", (str(uuid4()), event_id, owner_id, resource, resource_id, action, json.dumps(details, default=str)))
+        # Audit inserts deliberately use this service's active transaction rather
+        # than an injected writer which could silently acquire another connection.
+        # The schema accepts only the four mutation actions used by this module.
+        if action not in {"create", "update", "delete", "status_change"}:
+            raise ValueError("Invalid audit action")
+        self._execute("INSERT INTO audit_logs (id,event_id,actor_user_id,resource_type,resource_id,action,details,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,NOW())", (str(uuid4()), event_id, owner_id, resource, resource_id, action, json.dumps(details, default=str)))
 
     def _threshold(self, event_id, category, actual):
         planned = Decimal(str(category["planned_amount"]))
         if planned and actual >= planned * Decimal("0.90"):
             state = f"{actual}/{planned}"
-            self.db.execute("INSERT INTO notifications (id,event_id,kind,source_type,source_id,state_key,message,created_at) VALUES (%s,%s,'budget_threshold','budget_category',%s,%s,%s,NOW()) ON CONFLICT (event_id,kind,source_type,source_id,state_key) DO NOTHING", (str(uuid4()), event_id, category["id"], state, f"Budget category {category['name']} has reached 90% of its planned amount"))
+            self._execute("INSERT INTO notifications (id,event_id,kind,source_type,source_id,state_key,message,created_at) VALUES (%s,%s,'budget_threshold','budget_category',%s,%s,%s,NOW()) ON CONFLICT (event_id,kind,source_type,source_id,state_key) DO NOTHING", (str(uuid4()), event_id, category["id"], state, f"Budget category {category['name']} has reached 90% of its planned amount"))
 
     def list_categories(self, owner_id, event_id, query):
         self._event(owner_id, event_id)
-        page, size = int(query.get("page", 1)), int(query.get("size", 20))
-        if page < 1 or not 1 <= size <= 100: raise ValidationError("Invalid page or size")
+        page, size = self._pagination(query)
         sort = query.get("sort", "created_at"); allowed = {"name":"c.name", "planned_amount":"c.planned_amount", "created_at":"c.created_at", "updated_at":"c.updated_at"}
         desc = sort.startswith("-"); key = sort[1:] if desc else sort
         if key not in allowed: raise ValidationError("Invalid sort field")
@@ -82,17 +148,19 @@ class BudgetService:
         if query.get("name"):
             where.append("c.name ILIKE %s"); args.append("%" + query["name"] + "%")
         clause = " AND ".join(where)
-        count = self.db.fetchone(f"SELECT COUNT(*) AS total FROM budget_categories c WHERE {clause}", tuple(args))["total"]
-        rows = self.db.fetchall(f"SELECT c.*,COALESCE(SUM(e.amount),0) actual FROM budget_categories c LEFT JOIN expenses e ON e.budget_category_id=c.id WHERE {clause} GROUP BY c.id ORDER BY {allowed[key]} {'DESC' if desc else 'ASC'} LIMIT %s OFFSET %s", tuple(args+[size,(page-1)*size]))
+        count = self._fetchone(f"SELECT COUNT(*) AS total FROM budget_categories c WHERE {clause}", tuple(args))["total"]
+        rows = self._fetchall(f"SELECT c.*,COALESCE(SUM(e.amount),0) actual FROM budget_categories c LEFT JOIN expenses e ON e.budget_category_id=c.id WHERE {clause} GROUP BY c.id ORDER BY {allowed[key]} {'DESC' if desc else 'ASC'} LIMIT %s OFFSET %s", tuple(args+[size,(page-1)*size]))
         return {"items":[self._category_out(r,r["actual"]) for r in rows],"total":count,"page":page,"size":size}
 
     def create_category(self, owner_id,event_id,payload):
         name, planned = _required(payload,"name"), _decimal(payload.get("plannedAmount", payload.get("planned_amount")), "plannedAmount")
-        with self.db.transaction():
-            self._event(owner_id,event_id,True)
-            exists=self.db.fetchone("SELECT id FROM budget_categories WHERE event_id=%s AND name=%s",(event_id,name))
+        with self._transaction():
+            event = self._event(owner_id, event_id, True)
+            if self._planned_total(event_id) + planned > Decimal(str(event["planned_budget"])):
+                raise BusinessRuleError("Category planned amounts exceed the event planned budget")
+            exists=self._fetchone("SELECT id FROM budget_categories WHERE event_id=%s AND name=%s",(event_id,name))
             if exists: raise BusinessRuleError("Category name must be unique within an event")
-            cid=str(uuid4()); row=self.db.fetchone("INSERT INTO budget_categories (id,event_id,name,planned_amount,created_at,updated_at) VALUES (%s,%s,%s,%s,NOW(),NOW()) RETURNING *",(cid,event_id,name,planned))
+            cid=str(uuid4()); row=self._fetchone("INSERT INTO budget_categories (id,event_id,name,planned_amount,created_at,updated_at) VALUES (%s,%s,%s,%s,NOW(),NOW()) RETURNING *",(cid,event_id,name,planned))
             self._audit(event_id,owner_id,"budget_category",cid,"create",{"name":name,"plannedAmount":str(planned)})
             return self._category_out(row)
 
@@ -101,27 +169,30 @@ class BudgetService:
 
     def update_category(self,owner_id,event_id,category_id,payload):
         if not payload: raise ValidationError("Request body cannot be empty")
-        with self.db.transaction():
+        with self._transaction():
+            event = self._event(owner_id, event_id, True)
             old=self._category(owner_id,event_id,category_id,True); name=payload.get("name",old["name"])
             if not isinstance(name,str) or not name.strip(): raise ValidationError("name must be non-empty")
             planned=_decimal(payload.get("plannedAmount",payload.get("planned_amount",old["planned_amount"])),"plannedAmount")
+            if self._planned_total(event_id, category_id) + planned > Decimal(str(event["planned_budget"])):
+                raise BusinessRuleError("Category planned amounts exceed the event planned budget")
             actual=self._actual(category_id)
             if planned < actual: raise BusinessRuleError("Planned amount cannot be lower than actual spending")
-            dup=self.db.fetchone("SELECT id FROM budget_categories WHERE event_id=%s AND name=%s AND id<>%s",(event_id,name.strip(),category_id))
+            dup=self._fetchone("SELECT id FROM budget_categories WHERE event_id=%s AND name=%s AND id<>%s",(event_id,name.strip(),category_id))
             if dup: raise BusinessRuleError("Category name must be unique within an event")
-            row=self.db.fetchone("UPDATE budget_categories SET name=%s,planned_amount=%s,updated_at=NOW() WHERE id=%s RETURNING *",(name.strip(),planned,category_id))
+            row=self._fetchone("UPDATE budget_categories SET name=%s,planned_amount=%s,updated_at=NOW() WHERE id=%s RETURNING *",(name.strip(),planned,category_id))
             self._audit(event_id,owner_id,"budget_category",category_id,"update",{"name":name.strip(),"plannedAmount":str(planned)})
             self._threshold(event_id,row,actual); return self._category_out(row,actual)
 
     def delete_category(self,owner_id,event_id,category_id):
-        with self.db.transaction():
+        with self._transaction():
             row=self._category(owner_id,event_id,category_id,True)
             if self._actual(category_id): raise BusinessRuleError("Only an empty budget category can be deleted")
-            self.db.execute("DELETE FROM budget_categories WHERE id=%s",(category_id,)); self._audit(event_id,owner_id,"budget_category",category_id,"delete",{"name":row["name"]})
+            self._execute("DELETE FROM budget_categories WHERE id=%s",(category_id,)); self._audit(event_id,owner_id,"budget_category",category_id,"delete",{"name":row["name"]})
 
     def list_expenses(self,owner_id,event_id,category_id,query):
-        self._category(owner_id,event_id,category_id); page,size=int(query.get("page",1)),int(query.get("size",20))
-        if page<1 or not 1<=size<=100: raise ValidationError("Invalid page or size")
+        self._category(owner_id,event_id,category_id)
+        page, size = self._pagination(query)
         sort=query.get("sort","incurred_on"); allowed={"name":"name","amount":"amount","incurred_on":"incurred_on","created_at":"created_at"}; desc=sort.startswith("-"); key=sort[1:] if desc else sort
         if key not in allowed: raise ValidationError("Invalid sort field")
         clauses=["budget_category_id=%s"]; args=[category_id]
@@ -131,12 +202,12 @@ class BudgetService:
                 try: date.fromisoformat(query[q])
                 except ValueError: raise ValidationError(f"{q} must be an ISO date")
                 clauses.append(f"{col}{op}%s");args.append(query[q])
-        where=" AND ".join(clauses); total=self.db.fetchone(f"SELECT COUNT(*) total FROM expenses WHERE {where}",tuple(args))["total"]
-        rows=self.db.fetchall(f"SELECT * FROM expenses WHERE {where} ORDER BY {allowed[key]} {'DESC' if desc else 'ASC'} LIMIT %s OFFSET %s",tuple(args+[size,(page-1)*size]))
+        where=" AND ".join(clauses); total=self._fetchone(f"SELECT COUNT(*) total FROM expenses WHERE {where}",tuple(args))["total"]
+        rows=self._fetchall(f"SELECT * FROM expenses WHERE {where} ORDER BY {allowed[key]} {'DESC' if desc else 'ASC'} LIMIT %s OFFSET %s",tuple(args+[size,(page-1)*size]))
         return {"items":[self._expense_out(x) for x in rows],"total":total,"page":page,"size":size}
 
     def get_expense(self,owner,event,cat,eid):
-        self._category(owner,event,cat); row=self.db.fetchone("SELECT * FROM expenses WHERE id=%s AND budget_category_id=%s",(eid,cat))
+        self._category(owner,event,cat); row=self._fetchone("SELECT * FROM expenses WHERE id=%s AND budget_category_id=%s",(eid,cat))
         if not row: raise NotFoundError("Expense not found")
         return self._expense_out(row)
 
@@ -150,24 +221,24 @@ class BudgetService:
         return name.strip(),amount,incurred,notes
 
     def create_expense(self,owner,event,cat,payload):
-        with self.db.transaction():
+        with self._transaction():
             category=self._category(owner,event,cat,True); name,amount,incurred,notes=self._expense_payload(payload)
             actual=self._actual(cat)
             if actual+amount > Decimal(str(category["planned_amount"])): raise BusinessRuleError("Expense exceeds category planned amount")
-            eid=str(uuid4()); row=self.db.fetchone("INSERT INTO expenses (id,budget_category_id,name,amount,incurred_on,notes,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,NOW(),NOW()) RETURNING *",(eid,cat,name,amount,incurred,notes))
+            eid=str(uuid4()); row=self._fetchone("INSERT INTO expenses (id,budget_category_id,name,amount,incurred_on,notes,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,NOW(),NOW()) RETURNING *",(eid,cat,name,amount,incurred,notes))
             self._audit(event,owner,"expense",eid,"create",{"name":name,"amount":str(amount)}); self._threshold(event,category,actual+amount); return self._expense_out(row)
 
     def update_expense(self,owner,event,cat,eid,payload):
-        with self.db.transaction():
-            category=self._category(owner,event,cat,True); old=self.db.fetchone("SELECT * FROM expenses WHERE id=%s AND budget_category_id=%s FOR UPDATE",(eid,cat))
+        with self._transaction():
+            category=self._category(owner,event,cat,True); old=self._fetchone("SELECT * FROM expenses WHERE id=%s AND budget_category_id=%s FOR UPDATE",(eid,cat))
             if not old: raise NotFoundError("Expense not found")
             name,amount,incurred,notes=self._expense_payload(payload,old); actual=self._actual(cat)-Decimal(str(old["amount"]))+amount
             if actual>Decimal(str(category["planned_amount"])): raise BusinessRuleError("Expense exceeds category planned amount")
-            row=self.db.fetchone("UPDATE expenses SET name=%s,amount=%s,incurred_on=%s,notes=%s,updated_at=NOW() WHERE id=%s RETURNING *",(name,amount,incurred,notes,eid))
+            row=self._fetchone("UPDATE expenses SET name=%s,amount=%s,incurred_on=%s,notes=%s,updated_at=NOW() WHERE id=%s RETURNING *",(name,amount,incurred,notes,eid))
             self._audit(event,owner,"expense",eid,"update",{"name":name,"amount":str(amount)}); self._threshold(event,category,actual); return self._expense_out(row)
 
     def delete_expense(self,owner,event,cat,eid):
-        with self.db.transaction():
-            self._category(owner,event,cat,True); old=self.db.fetchone("SELECT * FROM expenses WHERE id=%s AND budget_category_id=%s FOR UPDATE",(eid,cat))
+        with self._transaction():
+            self._category(owner,event,cat,True); old=self._fetchone("SELECT * FROM expenses WHERE id=%s AND budget_category_id=%s FOR UPDATE",(eid,cat))
             if not old: raise NotFoundError("Expense not found")
-            self.db.execute("DELETE FROM expenses WHERE id=%s",(eid,)); self._audit(event,owner,"expense",eid,"delete",{"name":old["name"],"amount":str(old["amount"])})
+            self._execute("DELETE FROM expenses WHERE id=%s",(eid,)); self._audit(event,owner,"expense",eid,"delete",{"name":old["name"],"amount":str(old["amount"])})

@@ -7,6 +7,7 @@ from uuid import UUID
 from flask import Blueprint, Response, g, jsonify, request
 
 from eventforge.errors import ValidationError
+from eventforge.security import require_auth
 from eventforge.services.guest_service import GuestService
 
 
@@ -15,24 +16,29 @@ def create_guest_blueprint(service: GuestService) -> Blueprint:
     blueprint = Blueprint("guests", __name__)
 
     @blueprint.get("/events/<uuid:event_id>/guests")
+    @require_auth
     def list_guests(event_id: UUID) -> Response:
         page, size, filters, sort, direction = _list_query()
         return jsonify(service.list(event_id, _user_id(), filters, page, size, sort, direction))
 
     @blueprint.post("/events/<uuid:event_id>/guests")
+    @require_auth
     def create_guest(event_id: UUID) -> tuple[Response, int]:
         guest = service.create(event_id, _user_id(), _json_body())
         return jsonify(guest), 201
 
     @blueprint.get("/events/<uuid:event_id>/guests/<uuid:guest_id>")
+    @require_auth
     def get_guest(event_id: UUID, guest_id: UUID) -> Response:
         return jsonify(service.get(event_id, guest_id, _user_id()))
 
     @blueprint.patch("/events/<uuid:event_id>/guests/<uuid:guest_id>")
+    @require_auth
     def update_guest(event_id: UUID, guest_id: UUID) -> Response:
         return jsonify(service.update(event_id, guest_id, _user_id(), _json_body()))
 
     @blueprint.delete("/events/<uuid:event_id>/guests/<uuid:guest_id>")
+    @require_auth
     def delete_guest(event_id: UUID, guest_id: UUID) -> tuple[Response, int]:
         service.delete(event_id, guest_id, _user_id())
         return "", 204
