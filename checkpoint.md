@@ -4,14 +4,13 @@
 |---|---|
 | 1 Design/scaffold | complete |
 | 2 Resource modules | complete; verifier repairs applied to tasks, guests, budgets/expenses, schedule, vendors/payments, notifications/audit |
-| 3 Application/infra | complete; guest/task wiring, scanner lifecycle, public docs/spec and complete OpenAPI added |
+| 3 Application/infra | complete; docs/spec now bearer-protected per issued-task override, registration returns a signed token, and startup waits for PostgreSQL |
 | 4 Compile | passed (`python -m compileall`) |
-| 5 pytest | passed with 4 focused tests; 6 PostgreSQL integration cases honestly skipped because no reachable `DATABASE_URL`/PostgreSQL service exists |
-| 5 Boot verification | attempted 3/3 via `start.sh`; all failed at migration with `psycopg.OperationalError`: connection to `127.0.0.1:5432` refused |
-| 5 Public live probes | passed: gunicorn served `/health`, `/docs`, `/openapi.json` as 200 and unauthenticated `/events` as 401; factory probe observed 44/44 non-public routes reject missing Bearer tokens with 401 |
-| 5 Docker verification | failed/skipped honestly: Docker client is installed but daemon at `/var/run/docker.sock` is unavailable, so pull/build/run cannot execute |
-| 6 Reports | pending rerun after PostgreSQL integration and Docker verification |
-| Resume repairs | in progress: authenticated docs/spec and registration token override prior public-docs decision; integration environment and reports must be regenerated from observed results |
+| 5 pytest | passed: 12 tests against an isolated local PostgreSQL 17 instance (`DATABASE_URL=...127.0.0.1...`), covering auth, ownership, business rules, aggregates, audit, scanner, and docs |
+| 5 Boot verification | passed: `start.sh` booted Gunicorn against isolated PostgreSQL; `/health` 200, docs unauthenticated 401, registration supplied token, authenticated docs/spec 200; app and DB stopped cleanly |
+| 5 Docker verification | attempted 1/1 but cannot run: Docker CLI exists and daemon at `/var/run/docker.sock` remains unreachable, preventing pull/build/run; accurately FAIL in report |
+| 6 Reports | complete: regenerated `tests-artifacts/test_results.json`, `api_test_report.xlsx`, `project_report.docx` from live HTTP probes and observed 12-test PostgreSQL result |
+| Resume repairs | complete |
 
 ## Decisions
 - Flask 3.1 + psycopg 3 direct SQL, Python 3.13; package `eventforge`, port 8000.
@@ -23,4 +22,4 @@
 
 ## Test coverage
 - `tests/test_task_routes.py` and `tests/test_budget_routes.py` verify real Flask route JWT protection/prefix handling.
-- `tests/test_postgres_integration.py` contains real PostgreSQL integration coverage for auth, ownership 404/403, validation, capacity, task dependency/status, budget/payment caps, exact aggregates, audit rows, schedule overlap, scanner dedupe, and docs/spec. It requires a reachable `DATABASE_URL` and performs migration/truncation; it was not falsely passed without that dependency.
+- `tests/test_postgres_integration.py` contains real PostgreSQL integration coverage for registration-token auth, docs/spec authentication, ownership 404/403, validation, capacity, task dependency/status, budget/payment caps, exact aggregates, audit rows, schedule overlap, and scanner dedupe. It ran and passed against isolated PostgreSQL 17 with migration/truncation.

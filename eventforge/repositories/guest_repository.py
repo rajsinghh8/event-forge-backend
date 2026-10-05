@@ -21,7 +21,7 @@ class GuestRepository:
         with conn.cursor() as cur:
             cur.execute("SELECT owner_id FROM events WHERE id = %s", (event_id,))
             row = cur.fetchone()
-        return row[0] if row else None
+        return row["owner_id"] if row else None
 
     def get(self, conn: Connection[Any], event_id: UUID, guest_id: UUID, *, lock: bool = False) -> Mapping[str, Any] | None:
         suffix = " FOR UPDATE" if lock else ""
@@ -49,7 +49,7 @@ class GuestRepository:
         where = " WHERE " + " AND ".join(predicates)
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM guests" + where, values)
-            total = cur.fetchone()[0]
+            total = cur.fetchone()["count"]
             cur.execute(
                 "SELECT id, event_id, name, email, status, created_at, updated_at FROM guests"
                 + where + f" ORDER BY {sort_sql} LIMIT %s OFFSET %s",
@@ -65,7 +65,8 @@ class GuestRepository:
             if not event:
                 return None
             cur.execute("SELECT COUNT(*) FROM guests WHERE event_id = %s AND status = 'accepted'", (event_id,))
-            return event[0], cur.fetchone()[0]
+            accepted = cur.fetchone()
+            return event["capacity"], accepted["count"]
 
     def insert(self, conn: Connection[Any], guest: dict[str, Any]) -> Mapping[str, Any]:
         with conn.cursor() as cur:

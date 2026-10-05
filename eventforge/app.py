@@ -72,7 +72,12 @@ def create_app(settings: Settings | None = None) -> Flask:
             if "unique" in str(exc).lower():
                 raise ConflictError("Email is already registered") from exc
             raise
-        return jsonify({"id": str(user_id), "email": email}), 201
+        return jsonify({
+            "id": str(user_id),
+            "email": email,
+            "accessToken": token_for(user_id),
+            "tokenType": "Bearer",
+        }), 201
 
     @app.post("/auth/login")
     def login():
@@ -256,12 +261,13 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     _register_modules(app, database, settings)
 
-    # Documentation is deliberately public: it is useful to API consumers before login.
     @app.get("/openapi.json")
+    @require_auth
     def openapi():
         return jsonify(_openapi())
 
     @app.get("/docs")
+    @require_auth
     def docs():
         return "<!doctype html><html><body><div id=\"swagger-ui\"></div><script src=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js\"></script><script>SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui'})</script></body></html>"
 
@@ -319,9 +325,9 @@ def _openapi() -> dict:
     size = {"name": "size", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100}}
     paths = {
         "/health": {"get": {"summary": "Health check", "security": [], "responses": response(200, "Health")}},
-        "/docs": {"get": {"summary": "Swagger UI", "security": [], "responses": response(200, "Html")}},
-        "/openapi.json": {"get": {"summary": "OpenAPI specification", "security": [], "responses": response(200, "OpenApi")}},
-        "/auth/register": {"post": op("Register user", 201, "User", "Credentials")},
+        "/docs": {"get": {"summary": "Swagger UI", "security": [{"bearerAuth": []}], "responses": {**response(200, "Html"), **errors}}},
+        "/openapi.json": {"get": {"summary": "OpenAPI specification", "security": [{"bearerAuth": []}], "responses": {**response(200, "OpenApi"), **errors}}},
+        "/auth/register": {"post": op("Register user", 201, "RegisteredUser", "Credentials")},
         "/auth/login": {"post": op("Login", 200, "Token", "Credentials")},
         "/events": {"get": op("List events", schema="EventPage", parameters=(page, size)), "post": op("Create event", 201, "Id", "EventCreate")},
         "/events/{event_id}": {"get": op("Get event", schema="Event", parameters=(event_id,)), "patch": op("Update event", schema="Event", body="EventUpdate", parameters=(event_id,)), "delete": op("Delete event", 204, parameters=(event_id,))},
@@ -344,7 +350,7 @@ def _openapi() -> dict:
     paths["/events/{event_id}/notifications"] = {"get": op("List notifications", schema="NotificationPage", parameters=(event_id, page, size))}
     paths["/events/{event_id}/notifications/{notification_id}"] = {"patch": op("Acknowledge notification", schema="Notification", parameters=(event_id, notification_id))}
     paths["/events/{event_id}/audit-logs"] = {"get": op("List audit logs", schema="AuditLogPage", parameters=(event_id, page, size))}
-    # Authentication and documentation are the only deliberately public route families.
+    # Authentication endpoints are deliberately public; all other operations require Bearer auth.
     paths["/auth/register"]["post"]["security"] = []
     paths["/auth/login"]["post"]["security"] = []
     query = lambda name, description="": {"name": name, "in": "query", "schema": {"type": "string"}, "description": description}
@@ -369,7 +375,7 @@ def _schemas() -> dict:
     result = {
         "Error": obj({"timestamp": date_time, "status": {"type": "integer"}, "error": string, "message": string, "path": string}, ("timestamp", "status", "error", "message", "path")),
         "Health": obj({"status": string}, ("status",)), "Html": {"type": "string"}, "OpenApi": {"type": "object"}, "Id": obj({"id": uid}, ("id",)),
-        "Credentials": obj({"email": {"type": "string", "format": "email"}, "password": {"type": "string", "minLength": 8}}, ("email", "password")), "User": obj({"id": uid, "email": {"type": "string", "format": "email"}}, ("id", "email")), "Token": obj({"accessToken": string, "tokenType": {"type": "string", "example": "Bearer"}}, ("accessToken", "tokenType")),
+        "Credentials": obj({"email": {"type": "string", "format": "email"}, "password": {"type": "string", "minLength": 8}}, ("email", "password")), "User": obj({"id": uid, "email": {"type": "string", "format": "email"}}, ("id", "email")), "Token": obj({"accessToken": string, "tokenType": {"type": "string", "enum": ["Bearer"]}}, ("accessToken", "tokenType")), "RegisteredUser": obj({"id": uid, "email": {"type": "string", "format": "email"}, "accessToken": string, "tokenType": {"type": "string", "enum": ["Bearer"]}}, ("id", "email", "accessToken", "tokenType")),
         "EventCreate": obj({"name": string, "description": string, "startAt": date_time, "endAt": date_time, "capacity": {"type": "integer", "minimum": 0}, "plannedBudget": money}, ("name", "startAt", "endAt", "capacity", "plannedBudget")), "EventUpdate": obj({"name": string, "description": string, "capacity": {"type": "integer", "minimum": 0}, "plannedBudget": money}), "Event": obj({"id": uid, "owner_id": uid, "name": string, "description": string, "start_at": date_time, "end_at": date_time, "capacity": {"type": "integer"}, "planned_budget": money}), "BudgetSummary": obj({"planned": money, "actual": money, "remaining": money}),
         "GuestCreate": obj({"name": string, "email": {"type": "string", "format": "email"}, "status": {"type": "string", "enum": ["invited", "accepted", "declined", "cancelled"]}}, ("name", "email")), "GuestUpdate": obj({"name": string, "email": {"type": "string", "format": "email"}, "status": {"type": "string", "enum": ["invited", "accepted", "declined", "cancelled"]}}), "Guest": obj({"id": uid, "event_id": uid, "name": string, "email": string, "status": string, "created_at": date_time, "updated_at": date_time}),
         "TaskCreate": obj({"title": string, "description": string, "due_at": date_time, "status": {"type": "string", "enum": ["todo", "in_progress", "completed", "cancelled"]}, "priority": {"type": "string", "enum": ["low", "medium", "high"]}, "dependency_task_id": uid}, ("title",)), "TaskUpdate": obj({"title": string, "description": string, "due_at": date_time, "status": {"type": "string", "enum": ["todo", "in_progress", "completed", "cancelled"]}, "priority": {"type": "string", "enum": ["low", "medium", "high"]}, "dependency_task_id": uid}), "Task": obj({"id": uid, "event_id": uid, "title": string, "description": string, "due_at": date_time, "status": string, "priority": string, "dependency_task_id": uid}),

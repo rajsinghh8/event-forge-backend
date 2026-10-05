@@ -45,7 +45,7 @@ def migrated_database(postgres_url: str) -> None:
     with psycopg.connect(postgres_url, autocommit=True) as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT to_regclass('public.users') AS users_table")
-            if cursor.fetchone()["users_table"] is None:
+            if cursor.fetchone()[0] is None:
                 cursor.execute(MIGRATION.read_text())
 
 

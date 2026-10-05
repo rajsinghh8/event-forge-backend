@@ -8,9 +8,16 @@ def _register_and_login(client, email: str) -> dict[str, str]:
     password = "correct-horse-battery-staple"
     registered = client.post("/auth/register", json={"email": email, "password": password})
     assert registered.status_code == 201, registered.get_json()
+    registration = registered.get_json()
+    # Registration is immediately usable while exposing no password-derived fields.
+    assert set(registration) == {"id", "email", "accessToken", "tokenType"}
+    assert registration["email"] == email
+    assert registration["tokenType"] == "Bearer"
+    assert isinstance(registration["accessToken"], str) and registration["accessToken"]
     login = client.post("/auth/login", json={"email": email, "password": password})
     assert login.status_code == 200, login.get_json()
-    return {"Authorization": "Bearer " + login.get_json()["accessToken"]}
+    # Use the registration token for subsequent persistence operations as well.
+    return {"Authorization": "Bearer " + registration["accessToken"]}
 
 
 def _event(client, headers, *, capacity=3, budget="100.00") -> str:
@@ -30,16 +37,26 @@ def _assert_error(response, status: int):
     assert payload["status"] == status
 
 
-def test_auth_validation_public_docs_and_ownership_contract(client):
-    # Documentation/spec remain accessible before login, while resource routes do not.
-    assert client.get("/docs").status_code == 200
-    spec = client.get("/openapi.json")
-    assert spec.status_code == 200
-    assert "/events/{event_id}/tasks" in spec.get_json()["paths"]
+def test_auth_validation_docs_and_ownership_contract(client):
+    # Docs and the OpenAPI contract must not leak before authentication.
+    _assert_error(client.get("/docs"), 401)
+    _assert_error(client.get("/openapi.json"), 401)
+    _assert_error(client.get("/docs", headers={"Authorization": "Bearer invalid"}), 401)
+    _assert_error(client.get("/openapi.json", headers={"Authorization": "Bearer invalid"}), 401)
     _assert_error(client.get("/events"), 401)
     _assert_error(client.post("/auth/register", json={"email": "not-an-email", "password": "short"}), 400)
 
     owner = _register_and_login(client, "owner@example.test")
+    assert client.get("/docs", headers=owner).status_code == 200
+    spec = client.get("/openapi.json", headers=owner)
+    assert spec.status_code == 200
+    document = spec.get_json()
+    assert "/events/{event_id}/tasks" in document["paths"]
+    assert document["paths"]["/docs"]["get"]["security"] == [{"bearerAuth": []}]
+    assert document["paths"]["/openapi.json"]["get"]["security"] == [{"bearerAuth": []}]
+    assert document["paths"]["/auth/register"]["post"]["security"] == []
+    assert document["paths"]["/auth/login"]["post"]["security"] == []
+    assert {"id", "email", "accessToken", "tokenType"} <= set(document["components"]["schemas"]["RegisteredUser"]["properties"])
     other = _register_and_login(client, "other@example.test")
     event_id = _event(client, owner)
     _assert_error(client.post("/events", headers=owner, json={"name": "bad"}), 400)
