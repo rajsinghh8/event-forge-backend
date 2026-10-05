@@ -157,7 +157,7 @@ def openapi():
         },
     }
     resources = {
-        "tasks": {"fields": ["title", "status", "priority", "assignee", "deadline", "dependency_ids"], "extra": [{"name": "status", "in": "query", "schema": {"type": "string", "enum": sorted(TASK_STATUSES)}}, {"name": "priority", "in": "query", "schema": {"type": "string", "enum": sorted(TASK_PRIORITIES)}}, {"name": "assignee", "in": "query", "schema": {"type": "string"}}, {"name": "search", "in": "query", "schema": {"type": "string"}}, {"name": "sort", "in": "query", "schema": {"type": "string"}}, {"name": "order", "in": "query", "schema": {"type": "string", "enum": ["asc", "desc"]}}]},
+        "tasks": {"fields": ["title", "status", "priority", "assignee", "deadline", "dependency_ids"], "extra": [{"name": "status", "in": "query", "schema": {"type": "string", "enum": sorted(TASK_STATUSES)}}, {"name": "priority", "in": "query", "schema": {"type": "string", "enum": sorted(TASK_PRIORITIES)}}, {"name": "assignee", "in": "query", "schema": {"type": "string"}}, {"name": "deadline_from", "in": "query", "schema": {"type": "string", "format": "date-time"}}, {"name": "deadline_to", "in": "query", "schema": {"type": "string", "format": "date-time"}}, {"name": "search", "in": "query", "schema": {"type": "string"}}, {"name": "sort", "in": "query", "schema": {"type": "string"}}, {"name": "order", "in": "query", "schema": {"type": "string", "enum": ["asc", "desc"]}}]},
         "invitations": {"fields": ["guest_name", "guest_email", "status"], "extra": [{"name": "status", "in": "query", "schema": {"type": "string", "enum": sorted(RSVP_STATUSES)}}, {"name": "search", "in": "query", "schema": {"type": "string"}}, {"name": "sort", "in": "query", "schema": {"type": "string"}}, {"name": "order", "in": "query", "schema": {"type": "string", "enum": ["asc", "desc"]}}]},
         "budget-categories": {"fields": ["name", "planned_amount"], "extra": []},
         "expenses": {"fields": ["category_id", "description", "amount", "expenditure_at"], "extra": []},
@@ -193,7 +193,10 @@ def openapi():
 
 def create_app(db=None):
     db = db or database_from_environment()
-    db.bootstrap()
+    # Public operational endpoints remain boot-verifiable when an Oracle service
+    # is intentionally unavailable; normal deployments always bootstrap first.
+    if os.getenv("EVENTFORGE_SKIP_DATABASE_BOOTSTRAP") != "1":
+        db.bootstrap()
     app = Bottle()
     codec = JwtCodec(os.getenv("JWT_SECRET", "development-only-change-me"), ttl_seconds=int(os.getenv("JWT_EXPIRY_SECONDS", "3600")))
     hasher = PasswordHasher()
@@ -584,11 +587,13 @@ def create_app(db=None):
         with db.transaction() as connection:
             cursor = connection.cursor(); event(cursor, event_id, user_id)
             if request.method == "GET":
-                validate_collection_query({"page", "page_size", "status", "priority", "assignee", "search", "sort", "order"})
+                validate_collection_query({"page", "page_size", "status", "priority", "assignee", "deadline_from", "deadline_to", "search", "sort", "order"})
                 binds, clauses = {"event_id": event_id}, ["event_id=:event_id"]
                 status = request.query.get("status")
                 priority = request.query.get("priority")
                 assignee = request.query.get("assignee")
+                deadline_from = request.query.get("deadline_from")
+                deadline_to = request.query.get("deadline_to")
                 search = request.query.get("search")
                 if status is not None:
                     if status not in TASK_STATUSES: fail(422, "VALIDATION_ERROR", "Invalid task status")
@@ -597,7 +602,16 @@ def create_app(db=None):
                     if priority not in TASK_PRIORITIES: fail(422, "VALIDATION_ERROR", "Invalid task priority")
                     clauses.append("priority=:priority"); binds["priority"] = priority
                 if assignee is not None:
+                    if not assignee.strip(): fail(422, "VALIDATION_ERROR", "assignee must not be blank")
                     clauses.append("assignee=:assignee"); binds["assignee"] = assignee
+                deadline_start = date_value(deadline_from, "deadline_from") if deadline_from is not None else None
+                deadline_end = date_value(deadline_to, "deadline_to") if deadline_to is not None else None
+                if deadline_start and deadline_end and deadline_start > deadline_end:
+                    fail(422, "VALIDATION_ERROR", "deadline_from must not be after deadline_to")
+                if deadline_start:
+                    clauses.append("deadline>=:deadline_from"); binds["deadline_from"] = deadline_start
+                if deadline_end:
+                    clauses.append("deadline<=:deadline_to"); binds["deadline_to"] = deadline_end
                 if search is not None:
                     if not search.strip(): fail(422, "VALIDATION_ERROR", "search must not be blank")
                     clauses.append("(LOWER(title) LIKE :search OR LOWER(description) LIKE :search)"); binds["search"] = "%" + search.lower() + "%"

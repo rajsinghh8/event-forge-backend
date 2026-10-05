@@ -15,8 +15,8 @@ Collection responses have this shape:
 ```
 
 Every collection accepts `page` (minimum `1`) and `page_size` (`1`--`100`).
-Where supported, collection filtering uses `q` for text search, `date` (or the
-resource's documented `from`/`to` range) for date filtering, and `sort` plus
+Where supported, collection filtering uses the resource's documented `q` or
+`search` text parameter, date range parameters, and `sort` plus
 `order=asc|desc` for ordering. Unsupported or invalid filters, pagination, or
 body fields produce `422 VALIDATION_ERROR`; malformed JSON produces `400
 INVALID_JSON`. A missing resource, including a resource not owned by the caller,
@@ -103,7 +103,8 @@ Content-Type: application/json
 requires `title` and `priority` (`LOW`, `MEDIUM`, `HIGH`, or `URGENT`); it may
 include nullable `assignee`, `description`, `deadline`, and `dependency_ids`.
 New tasks always start at `TODO`. Task collection filters are `status`,
-`priority`, `assignee`, text search `q`, `sort`, `order`, and pagination.
+`priority`, `assignee`, `deadline_from`, `deadline_to`, text `search`, `sort`,
+`order`, and pagination.
 
 The lifecycle is `TODO` → `IN_PROGRESS` or `BLOCKED`; `IN_PROGRESS` may become
 `BLOCKED` or `COMPLETED`; and `BLOCKED` may resume at `IN_PROGRESS`. A completed
@@ -169,8 +170,8 @@ BUDGET_LIMIT_EXCEEDED`.
 `GET`/`PUT`/`DELETE /api/events/{event_id}/schedule/{id}` manage schedule
 entries. Create requires `title`, `start_time`, and `end_time`; optional
 **`description`** is a string or `null` (`details` is not a schedule field).
-Schedule collection filters include `from`, `to`, text search `q`, sort/order,
-and pagination. Start must precede end, and overlapping half-open intervals are
+Schedule collection filters include `from`, `to`, text `search`, sort, and
+pagination. Start must precede end, and overlapping half-open intervals are
 rejected with `409 SCHEDULE_OVERLAP`.
 
 ## Vendors and payments
@@ -180,7 +181,7 @@ rejected with `409 SCHEDULE_OVERLAP`.
 create requires `name`, `service_type`, **`booking_status`**, and `cost`; it
 accepts optional nullable **`contact_details`**. Vendor responses include
 `paid_amount` and calculated decimal-string `outstanding_amount`. Vendor list
-filters include search `q`, `service_type`, `booking_status`, sort, and
+filters include `search`, `service_type`, `booking_status`, sort, and
 pagination. A vendor with payments cannot be deleted (`409
 VENDOR_HAS_PAYMENTS`).
 

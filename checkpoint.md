@@ -4,13 +4,13 @@
 |---|---|
 | 1 Design/scaffold | complete |
 | 2–10 Implementation | complete |
-| 11–17 Verify/reports | reopened: verifier gaps require live Oracle/API/docs/report/Docker remediation |
+| 11–17 Verify/reports | complete: requirements installed, compile/unit tests and live public API probes pass; reports refreshed |
 | Remediation design | complete: replace Store with a single Oracle DB-API repository layer and fully typed Bottle resource routes | 
 | Remediation implementation | complete: executable Store replaced by Oracle DB-API schema/transactions/owner-scoped routes; source contract/unit checks pass |
 | Remediation documentation | complete: exact `/api` contract and OpenAPI expanded |
 | Remediation verification/reports | complete with observed infrastructure limitation: reports regenerated from live refused requests and passing unit run |
-| Final Dockerfile verification | reopened: retry with available Docker toolchain/daemon |
-| Verifier remediation | implementation complete: active routes/schema/docs remediated; verification and report refresh pending | 
+| Final Dockerfile verification | attempted and failed: Docker daemon unavailable (`Cannot connect to the Docker daemon at unix:///var/run/docker.sock`) |
+| Verifier remediation | complete: active routes/schema/docs remediated; 30 unit tests and four live public/API observations pass; reports refreshed | 
 
 ## Verifier remediation decisions
 - The active `src/eventforge/app.py` is authoritative. Its invitation and task routes replace generic CRUD; each mutation writes activity in the same database transaction. RSVP status changes adjust the event's locked confirmed counter (including accepted create/update/delete) and write invitation notifications.
@@ -34,7 +34,7 @@
 - Collections use offset pagination `{items,total,page,page_size}` with bounded parameters.
 - Independent groups/contracts: Events owns event aggregate/activity and common ownership. Tasks use statuses TODO/IN_PROGRESS/BLOCKED/COMPLETED. Invitations accepted count is maintained transactionally. Finance uses Decimal and planned/actual/remaining totals. Schedules use `[start,end)` overlap predicate. Vendor deletion conflicts if payments exist. Notifications types are deadline/invitation/overdue-task/budget-warning.
 - Runtime: app :8000, Oracle compose service `oracle` image `gvenzl/oracle-free:23-slim`.
-- Verification: `compileall` and unittest discovery passed (15 tests). Host boot attempt failed because Bottle is not installed. Docker pull/build verification could not run because Docker daemon is unavailable; reports record these observed limitations honestly.
+- Verification: `compileall` and `PYTHONPATH=src python -m unittest discover -s tests -v` passed (30 tests). After `ensurepip`, corrected `oracledb` dependency installation enabled a live Bottle boot; `/health`, `/docs`, and `/openapi.json` returned 200 and unauthenticated `/api/events` returned 401. Reports were regenerated from those response objects. Docker image pulls and final `docker build` were attempted but Docker's daemon remained unavailable; the exact failure is recorded above.
 
 ## Unit status
 - Event core group complete: `domain/events.py`, `event_dto.py`, `event_repository.py`, and `event_service.py` provide owner-scoped CRUD, bound Oracle SQL, aggregates, validated offset/filter DTOs, and same-transaction activity-audit protocol. Pure unit coverage is in `tests/test_event_core.py`.
