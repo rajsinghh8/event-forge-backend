@@ -10,11 +10,12 @@
 | 5 Boot verification | attempted 3/3 via `start.sh`; all failed at migration with `psycopg.OperationalError`: connection to `127.0.0.1:5432` refused |
 | 5 Public live probes | passed: gunicorn served `/health`, `/docs`, `/openapi.json` as 200 and unauthenticated `/events` as 401; factory probe observed 44/44 non-public routes reject missing Bearer tokens with 401 |
 | 5 Docker verification | failed/skipped honestly: Docker client is installed but daemon at `/var/run/docker.sock` is unavailable, so pull/build/run cannot execute |
-| 6 Reports | complete: `tests-artifacts/test_results.json`, `api_test_report.xlsx`, `project_report.docx` based only on observed results |
+| 6 Reports | pending rerun after PostgreSQL integration and Docker verification |
+| Resume repairs | in progress: authenticated docs/spec and registration token override prior public-docs decision; integration environment and reports must be regenerated from observed results |
 
 ## Decisions
 - Flask 3.1 + psycopg 3 direct SQL, Python 3.13; package `eventforge`, port 8000.
-- JWT Bearer (HS256 default) / bcrypt. Register/login, `/health`, `/docs`, and `/openapi.json` are public; every business route uses `eventforge.security.require_auth`.
+- JWT Bearer (HS256 default) / bcrypt. `/health`, register, and login are public. Resume verifier requirements deliberately override the generic deploy-contract conflict: `/docs` and `/openapi.json` require a valid Bearer token, and registration returns safe user fields plus `accessToken`/`tokenType`. Every business route uses `eventforge.security.require_auth`.
 - PostgreSQL schema migration owns all 11 tables. UUIDs are generated in Python; numeric wire values are exact strings.
 - Offset pagination response: `{items,total,page,size}`. Validated query sort is per-resource allowlist.
 - All mutation audits use `create`, `update`, `delete`, or `status_change`; errors use `{timestamp,status,error,message,path}`.
