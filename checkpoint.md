@@ -6,7 +6,15 @@
 | 2-7 Implementation/infra | complete (Dockerfile and compose existence verified) |
 | 8-16 Verification/reports | complete with environment limitations |
 | Remediation design | complete: specialized services are handler-facing through the facade; resource repository mutations are owner/event constrained and transactional |
-| Remediation verification/reports | complete with external MySQL/Docker limitations honestly recorded | 
+| Remediation verification/reports | superseded: verifier requires live MySQL/Docker verification and contract corrections |
+| Verifier remediation design | complete; implementation pending |
+
+## Verifier remediation design
+- Infra verification will start the supplied `mysql` compose service, then boot Tornado against it and capture real authenticated API responses. Dockerfile is pinned to `python:3.13.5-slim` and must build/run against the same MySQL network.
+- Budget contract is canonical: nested `/api/events/{eventId}/budget-categories/{categoryId}/budget` plus `/expenses` CRUD, expense request/response fields are `name`, decimal `amount`, ISO `spent_on`, optional `notes`; compatibility aliases may remain only if consistently documented.
+- Core contract remediation owns computed `accepted_guest_count`, strict event/task validation, page/size pagination with filters/sort allowlists, and normalized audit verbs (`create`, `update`, `delete`, `status_change`).
+- Original task authentication policy wins for this remediation: `/docs` and `/openapi.json` require bearer auth (while `/health` remains public), despite the conflicting generic deploy guidance.
+- Services split for delegated work: budget/routes/expense contract; core/event/task/query/audit contract; documentation/OpenAPI/auth contract. All use existing facade/repository interfaces and preserve owner/event scope.
 
 ## Remediation decisions
 - `EventForgeService` is the single handler-facing facade and delegates core, budget, operations, and notification/audit methods to the specialized services using one shared MySQL repository.
