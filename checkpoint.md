@@ -9,7 +9,16 @@
 | Remediation implementation | complete: executable Store replaced by Oracle DB-API schema/transactions/owner-scoped routes; source contract/unit checks pass |
 | Remediation documentation | complete: exact `/api` contract and OpenAPI expanded |
 | Remediation verification/reports | complete with observed infrastructure limitation: reports regenerated from live refused requests and passing unit run |
-| Final Dockerfile verification | attempted; failed because Docker daemon/compose plugin unavailable | 
+| Final Dockerfile verification | reopened: retry with available Docker toolchain/daemon |
+| Verifier remediation | in progress: active Bottle composition root, relational schema, exact API contract, live verification and reports | 
+
+## Verifier remediation decisions
+- The active `src/eventforge/app.py` is authoritative. Its invitation and task routes replace generic CRUD; each mutation writes activity in the same database transaction. RSVP status changes adjust the event's locked confirmed counter (including accepted create/update/delete) and write invitation notifications.
+- Event budget is checked from a locked event row plus proposed expense totals before an expense INSERT/UPDATE. The mutation is rejected rather than creating a post-facto warning.
+- Tasks persist `priority` and nullable `assignee`, enforce TODO → IN_PROGRESS/BLOCKED → COMPLETED only (BLOCKED may resume IN_PROGRESS), and emit deadline/overdue notifications plus activity transactionally. Collection filtering is explicit and validated.
+- Canonical contracts: event `venue` required; vendor uses optional `contact_details` and required `booking_status`; schedule uses `description`; notification state is nullable `read_at`, with PATCH `{read:true|false}`. Pagination values outside bounds are validation errors, never clamped.
+- Oracle DDL declares child foreign keys, data constraints, and query indexes. Docs and the hand-written OpenAPI are updated in the same change as active routes.
+- Verification runs within `python:3.13-slim` using installed requirements, starts Oracle infra when Docker is available, then starts/probes the Bottle app in one disposable invocation; reports preserve all prior unique rows and use only observed responses. 
 
 ## Remediation decisions
 - The executable composition root will use one Oracle DB-API persistence module, initialized at app startup with idempotent schema DDL. Every mutation runs in a commit/rollback transaction with named SQL binds; event and child reads include owner/event predicates.
