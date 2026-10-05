@@ -1,6 +1,6 @@
 import unittest
 from contextlib import contextmanager
-from eventforge.errors import ConflictError
+from eventforge.errors import ConflictError, ValidationError
 from eventforge.resource_services.core import CoreResourceService
 
 class MemoryCoreRepository:
@@ -38,3 +38,12 @@ class CoreIntegrationTests(unittest.TestCase):
   self.assertEqual(guest['id'],1);self.assertEqual(repository.commits,1)
   self.assertEqual(len(repository.audits),1);self.assertEqual(len(repository.notifications),1)
   with self.assertRaises(ConflictError):service.create_guest(9,1,{'name':'B','status':'accepted'})
+ def test_event_detail_includes_repository_accepted_count_and_task_requires_title_priority(self):
+  repository=MemoryCoreRepository();service=CoreResourceService(repository)
+  service.create_guest(9,1,{'name':'A','status':'accepted'})
+  self.assertEqual(service.get_event(9,1)['accepted_guest_count'],1)
+  with self.assertRaises(ValidationError): service.create_task(9,1,{'priority':'high'})
+  with self.assertRaises(ValidationError): service.create_task(9,1,{'title':'T','priority':'urgent'})
+  task=service.create_task(9,1,{'title':' T ','priority':'high'})
+  self.assertEqual(task['title'],'T')
+  self.assertEqual(repository.audits[-1][1],'create')

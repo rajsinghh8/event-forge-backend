@@ -6,6 +6,19 @@ from typing import Any
 from eventforge.errors import ValidationError
 from eventforge.handlers.base import AuthenticatedHandler
 from eventforge.models import serialize
+from eventforge.validation import pagination, query_options
+
+def _filtered_page(rows, arguments, *, fields, filters, default_sort='id'):
+ limit,offset=pagination(arguments);query=query_options(arguments,allowed_sort=fields,allowed_filters=filters,default_sort=default_sort);sort=query.pop('sort');text=query.get('text','').lower();out=[]
+ for row in rows:
+  if text and text not in str(row.get('title',row.get('name',''))).lower():continue
+  if any(str(row.get(key)) != str(value) for key,value in query.items() if key not in {'text','startDate','endDate'}):continue
+  temporal=str(row.get('start_at',row.get('paid_on','')))
+  if query.get('startDate') and temporal[:10] < query['startDate']:continue
+  if query.get('endDate') and temporal[:10] > query['endDate']:continue
+  out.append(row)
+ field=sort.lstrip('-');out.sort(key=lambda row:(row.get(field) is None,row.get(field)),reverse=sort.startswith('-'))
+ return {'items':out[offset:offset+limit],'total':len(out),'limit':limit,'offset':offset}
 
 
 def _datetime(value: object, field: str) -> datetime:
@@ -25,7 +38,10 @@ def _required_text(data: dict[str, Any], field: str) -> str:
 
 class ScheduleItemsHandler(AuthenticatedHandler):
  async def get(self,event_id,item_id=None):
-  result=self.service.list_schedule_items(self.user_id,int(event_id)) if item_id is None else self.service.schedule_item(self.user_id,int(event_id),int(item_id));self.write_json(serialize(result))
+  if item_id is None:
+   result=_filtered_page(self.service.list_schedule_items(self.user_id,int(event_id)),self.request.arguments,fields={'id','title','start_at','end_at'},filters={'text','startDate','endDate'},default_sort='start_at')
+  else: result=self.service.schedule_item(self.user_id,int(event_id),int(item_id))
+  self.write_json(serialize(result))
  async def post(self,event_id,item_id=None):self.write_json(serialize(self.service.create_schedule_item(self.user_id,int(event_id),self._payload(self.body()))),201)
  async def put(self,event_id,item_id):self.write_json(serialize(self.service.update_schedule_item(self.user_id,int(event_id),int(item_id),self._payload(self.body()))))
  async def delete(self,event_id,item_id):self.service.delete_schedule_item(self.user_id,int(event_id),int(item_id));self.set_status(204);self.finish()
@@ -34,7 +50,10 @@ class ScheduleItemsHandler(AuthenticatedHandler):
 
 class VendorsHandler(AuthenticatedHandler):
  async def get(self,event_id,vendor_id=None):
-  result=self.service.list_vendors(self.user_id,int(event_id)) if vendor_id is None else self.service.vendor(self.user_id,int(event_id),int(vendor_id));self.write_json(serialize(result))
+  if vendor_id is None:
+   result=_filtered_page(self.service.list_vendors(self.user_id,int(event_id)),self.request.arguments,fields={'id','name','created_at'},filters={'text','name'},default_sort='id')
+  else: result=self.service.vendor(self.user_id,int(event_id),int(vendor_id))
+  self.write_json(serialize(result))
  async def post(self,event_id,vendor_id=None):self.write_json(serialize(self.service.create_vendor(self.user_id,int(event_id),self._payload(self.body()))),201)
  async def put(self,event_id,vendor_id):self.write_json(serialize(self.service.update_vendor(self.user_id,int(event_id),int(vendor_id),self._payload(self.body()))))
  async def delete(self,event_id,vendor_id):self.service.delete_vendor(self.user_id,int(event_id),int(vendor_id));self.set_status(204);self.finish()

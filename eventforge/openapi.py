@@ -1,4 +1,8 @@
-"""Canonical OpenAPI 3.0.3 document for the HTTP routes in ``routes.py``."""
+"""OpenAPI contract for EventForge's HTTP surface.
+
+Documentation routes are deliberately authenticated: only ``/health`` and the
+registration/login endpoints are public.
+"""
 from __future__ import annotations
 
 JSON = "application/json"
@@ -16,18 +20,18 @@ def response(description: str, schema: str | None = None) -> dict:
  return value
 
 
-def request(schema: str, *, required: bool = True) -> dict:
- return {"required": required, "content": {JSON: {"schema": ref(schema)}}}
+def request(schema: str) -> dict:
+ return {"required": True, "content": {JSON: {"schema": ref(schema)}}}
 
 
-ERROR_STATUS = {"ValidationError": "422", "Unauthorized": "401", "Forbidden": "403", "NotFound": "404", "Conflict": "409", "InternalError": "500"}
+ERROR_STATUS = {"ValidationError": "422", "Unauthorized": "401", "NotFound": "404", "Conflict": "409", "InternalError": "500"}
 
 
 def operation(summary: str, *, success: int = 200, schema: str | None = None,
               body: str | None = None, parameters: list[dict] | None = None,
               errors: tuple[str, ...] = ("Unauthorized", "ValidationError", "InternalError")) -> dict:
- responses = {str(success): response("Successful response" if success != 204 else "No content", schema)}
- responses.update({ERROR_STATUS[code]: {"$ref": f"#/components/responses/{code}"} for code in errors})
+ responses = {str(success): response("No content" if success == 204 else "Successful response", schema)}
+ responses.update({ERROR_STATUS[error]: {"$ref": f"#/components/responses/{error}"} for error in errors})
  result = {"summary": summary, "security": SECURITY, "responses": responses}
  if body:
   result["requestBody"] = request(body)
@@ -39,45 +43,53 @@ def operation(summary: str, *, success: int = 200, schema: str | None = None,
 def public_operation(summary: str, *, success: int = 200, schema: str | None = None,
                      body: str | None = None, errors: tuple[str, ...] = ("ValidationError", "Conflict", "InternalError")) -> dict:
  responses = {str(success): response("Successful response", schema)}
- responses.update({ERROR_STATUS[code]: {"$ref": f"#/components/responses/{code}"} for code in errors})
+ responses.update({ERROR_STATUS[error]: {"$ref": f"#/components/responses/{error}"} for error in errors})
  result = {"summary": summary, "responses": responses}
  if body:
   result["requestBody"] = request(body)
  return result
 
 
-ID = {"name": "eventId", "in": "path", "required": True, "schema": {"type": "integer", "format": "int64", "minimum": 1}}
-CATEGORY_ID = {"name": "categoryId", "in": "path", "required": True, "schema": {"type": "integer", "format": "int64", "minimum": 1}}
-TASK_ID = {"name": "taskId", "in": "path", "required": True, "schema": {"type": "integer", "format": "int64", "minimum": 1}}
-GUEST_ID = {"name": "guestId", "in": "path", "required": True, "schema": {"type": "integer", "format": "int64", "minimum": 1}}
-SCHEDULE_ID = {"name": "scheduleItemId", "in": "path", "required": True, "schema": {"type": "integer", "format": "int64", "minimum": 1}}
-VENDOR_ID = {"name": "vendorId", "in": "path", "required": True, "schema": {"type": "integer", "format": "int64", "minimum": 1}}
-PAYMENT_ID = {"name": "paymentId", "in": "path", "required": True, "schema": {"type": "integer", "format": "int64", "minimum": 1}}
-NOTIFICATION_ID = {"name": "notificationId", "in": "path", "required": True, "schema": {"type": "integer", "format": "int64", "minimum": 1}}
-PAGE = [
- {"name": "limit", "in": "query", "description": "Page size (1–100; default 20).", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
- {"name": "offset", "in": "query", "description": "Zero-based number of records to skip (default 0).", "schema": {"type": "integer", "minimum": 0, "default": 0}},
-]
-EXPENSE_FILTER = {"name": "category_id", "in": "query", "description": "Return only expenses in this budget category.", "schema": {"type": "integer", "format": "int64", "minimum": 1}}
+def path_id(name: str) -> dict:
+ return {"name": name, "in": "path", "required": True, "schema": {"type": "integer", "format": "int64", "minimum": 1}}
 
-# This list is intentionally route-derived, rather than a wish list.  It is used
-# by focused tests to prevent documentation from drifting from routes.py.
+
+ID = path_id("eventId")
+CATEGORY_ID = path_id("categoryId")
+EXPENSE_ID = path_id("expenseId")
+TASK_ID = path_id("taskId")
+GUEST_ID = path_id("guestId")
+SCHEDULE_ID = path_id("scheduleItemId")
+VENDOR_ID = path_id("vendorId")
+PAYMENT_ID = path_id("paymentId")
+NOTIFICATION_ID = path_id("notificationId")
+PAGE = [
+ {"name": "page", "in": "query", "description": "One-based page number; must be an integer of at least 1.", "schema": {"type": "integer", "minimum": 1, "default": 1}},
+ {"name": "size", "in": "query", "description": "Page size; must be an integer from 1 through 100.", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
+]
+FILTER = {"name": "filter", "in": "query", "description": "Resource-specific strict filter value. Unsupported filters are rejected.", "schema": {"type": "string"}}
+SORT = {"name": "sort", "in": "query", "description": "Resource-specific allowlisted sort field; prefix with '-' for descending order.", "schema": {"type": "string"}}
+EXPENSE_FILTER = {"name": "category_id", "in": "query", "description": "Legacy event-level expense list filter: category identifier.", "schema": {"type": "integer", "format": "int64", "minimum": 1}}
+
+# Kept route-derived, including the backwards-compatible budget aliases.  The
+# nested category paths are the canonical expense contract.
 PATHS = {
  "/health": ["get"], "/docs": ["get"], "/openapi.json": ["get"],
  "/api/auth/register": ["post"], "/api/auth/login": ["post"],
  "/api/events": ["get", "post"], "/api/events/{eventId}": ["get", "put", "delete"],
  "/api/events/{eventId}/tasks": ["get", "post"], "/api/events/{eventId}/tasks/{taskId}": ["get", "put", "delete"],
  "/api/events/{eventId}/guests": ["get", "post"], "/api/events/{eventId}/guests/{guestId}": ["get", "put", "delete"],
- "/api/events/{eventId}/audit-logs": ["get"],
- "/api/events/{eventId}/budget": ["get"],
+ "/api/events/{eventId}/audit-logs": ["get"], "/api/events/{eventId}/budget": ["get"],
  "/api/events/{eventId}/budget/categories": ["get", "post"], "/api/events/{eventId}/budget/categories/{categoryId}": ["get", "put", "delete"],
  "/api/events/{eventId}/budget-categories": ["get", "post"], "/api/events/{eventId}/budget-categories/{categoryId}": ["get", "put", "delete"],
+ "/api/events/{eventId}/budget-categories/{categoryId}/budget": ["get"],
+ "/api/events/{eventId}/budget-categories/{categoryId}/expenses": ["get", "post"],
+ "/api/events/{eventId}/budget-categories/{categoryId}/expenses/{expenseId}": ["get", "put", "delete"],
  "/api/events/{eventId}/expenses": ["get", "post"], "/api/events/{eventId}/expenses/{expenseId}": ["get", "put", "delete"],
  "/api/events/{eventId}/schedule-items": ["get", "post"], "/api/events/{eventId}/schedule-items/{scheduleItemId}": ["get", "put", "delete"],
  "/api/events/{eventId}/vendors": ["get", "post"], "/api/events/{eventId}/vendors/{vendorId}": ["get", "put", "delete"],
  "/api/events/{eventId}/vendors/{vendorId}/payments": ["get", "post"], "/api/events/{eventId}/vendors/{vendorId}/payments/{paymentId}": ["get", "put", "delete"],
- "/api/notifications": ["get"], "/api/notifications/{notificationId}": ["get", "put", "delete"],
- "/api/audit-logs": ["get"],
+ "/api/notifications": ["get"], "/api/notifications/{notificationId}": ["get", "put", "delete"], "/api/audit-logs": ["get"],
 }
 
 
@@ -85,14 +97,14 @@ def _singular(item: str) -> str:
  return item[:-3] + "y" if item.endswith("ies") else item[:-1] if item.endswith("s") else item
 
 
-def _crud_collection(item: str, create: str, parameters: list[dict] | None = None) -> dict:
+def _collection(item: str, create: str, parameters: list[dict] | None = None) -> dict:
  singular = _singular(item)
  return {"get": operation(f"List {item}", schema=item + "List", parameters=parameters),
          "post": operation(f"Create {singular}", success=201, schema=singular, body=create,
                            errors=("Unauthorized", "ValidationError", "NotFound", "Conflict", "InternalError"))}
 
 
-def _crud_item(item: str, update: str, parameters: list[dict]) -> dict:
+def _item(item: str, update: str, parameters: list[dict]) -> dict:
  singular = _singular(item)
  return {"get": operation(f"Get {singular}", schema=singular, parameters=parameters, errors=("Unauthorized", "NotFound", "InternalError")),
          "put": operation(f"Update {singular}", schema=singular, body=update, parameters=parameters, errors=("Unauthorized", "ValidationError", "NotFound", "Conflict", "InternalError")),
@@ -100,68 +112,67 @@ def _crud_item(item: str, update: str, parameters: list[dict]) -> dict:
 
 
 def build_openapi() -> dict:
+ list_query = [*PAGE, FILTER, SORT]
  paths = {
   "/health": {"get": public_operation("Health check", schema="Health", errors=("InternalError",))},
-  "/docs": {"get": public_operation("Swagger UI", schema=None, errors=("InternalError",))},
-  "/openapi.json": {"get": public_operation("OpenAPI document", schema="OpenApiDocument", errors=("InternalError",))},
+  # These are protected operations even though Swagger's bootstrap page is HTML.
+  "/docs": {"get": operation("Swagger UI", errors=("Unauthorized", "InternalError"))},
+  "/openapi.json": {"get": operation("OpenAPI document", schema="OpenApiDocument", errors=("Unauthorized", "InternalError"))},
   "/api/auth/register": {"post": public_operation("Register a user", success=201, schema="AuthResponse", body="Credentials")},
   "/api/auth/login": {"post": public_operation("Log in and obtain a bearer token", schema="AuthResponse", body="Credentials", errors=("Unauthorized", "ValidationError", "InternalError"))},
-  "/api/events": _crud_collection("Events", "EventInput", PAGE),
-  "/api/events/{eventId}": _crud_item("Events", "EventInput", [ID]),
-  "/api/events/{eventId}/tasks": _crud_collection("Tasks", "TaskInput", [ID]),
-  "/api/events/{eventId}/tasks/{taskId}": _crud_item("Tasks", "TaskInput", [ID, TASK_ID]),
-  "/api/events/{eventId}/guests": _crud_collection("Guests", "GuestInput", [ID, *PAGE]),
-  "/api/events/{eventId}/guests/{guestId}": _crud_item("Guests", "GuestInput", [ID, GUEST_ID]),
-  "/api/events/{eventId}/audit-logs": {"get": operation("List audit logs for this owned event only", schema="AuditLogPage", parameters=[ID, *PAGE], errors=("Unauthorized", "NotFound", "InternalError"))},
+  "/api/events": _collection("Events", "EventInput", list_query),
+  "/api/events/{eventId}": _item("Events", "EventInput", [ID]),
+  "/api/events/{eventId}/tasks": _collection("Tasks", "TaskInput", [ID, *list_query]),
+  "/api/events/{eventId}/tasks/{taskId}": _item("Tasks", "TaskInput", [ID, TASK_ID]),
+  "/api/events/{eventId}/guests": _collection("Guests", "GuestInput", [ID, *list_query]),
+  "/api/events/{eventId}/guests/{guestId}": _item("Guests", "GuestInput", [ID, GUEST_ID]),
+  "/api/events/{eventId}/audit-logs": {"get": operation("List audit logs for this owned event", schema="AuditLogPage", parameters=[ID, *list_query], errors=("Unauthorized", "NotFound", "InternalError"))},
   "/api/events/{eventId}/budget": {"get": operation("Get event budget aggregate", schema="BudgetAggregate", parameters=[ID], errors=("Unauthorized", "NotFound", "InternalError"))},
-  "/api/events/{eventId}/budget/categories": _crud_collection("BudgetCategories", "BudgetCategoryInput", [ID]),
-  "/api/events/{eventId}/budget/categories/{categoryId}": _crud_item("BudgetCategories", "BudgetCategoryUpdate", [ID, CATEGORY_ID]),
-  "/api/events/{eventId}/budget-categories": _crud_collection("BudgetCategories", "BudgetCategoryInput", [ID]),
-  "/api/events/{eventId}/budget-categories/{categoryId}": _crud_item("BudgetCategories", "BudgetCategoryUpdate", [ID, CATEGORY_ID]),
-  "/api/events/{eventId}/expenses": _crud_collection("Expenses", "ExpenseInput", [ID, EXPENSE_FILTER]),
-  "/api/events/{eventId}/expenses/{expenseId}": _crud_item("Expenses", "ExpenseUpdate", [ID, {"name": "expenseId", "in": "path", "required": True, "schema": {"type": "integer", "format": "int64", "minimum": 1}}]),
-  "/api/events/{eventId}/schedule-items": _crud_collection("ScheduleItems", "ScheduleItemInput", [ID]),
-  "/api/events/{eventId}/schedule-items/{scheduleItemId}": _crud_item("ScheduleItems", "ScheduleItemInput", [ID, SCHEDULE_ID]),
-  "/api/events/{eventId}/vendors": _crud_collection("Vendors", "VendorInput", [ID]),
-  "/api/events/{eventId}/vendors/{vendorId}": _crud_item("Vendors", "VendorInput", [ID, VENDOR_ID]),
-  "/api/events/{eventId}/vendors/{vendorId}/payments": _crud_collection("VendorPayments", "VendorPaymentInput", [ID, VENDOR_ID]),
-  "/api/events/{eventId}/vendors/{vendorId}/payments/{paymentId}": _crud_item("VendorPayments", "VendorPaymentInput", [ID, VENDOR_ID, PAYMENT_ID]),
-  "/api/notifications": {"get": operation("List notifications", schema="NotificationPage", parameters=PAGE)},
-  "/api/notifications/{notificationId}": {
-   "get": operation("Get notification", schema="Notification", parameters=[NOTIFICATION_ID], errors=("Unauthorized", "NotFound", "InternalError")),
-   "put": operation("Mark notification as read", schema="Notification", parameters=[NOTIFICATION_ID], errors=("Unauthorized", "NotFound", "InternalError")),
-   "delete": operation("Delete notification", success=204, parameters=[NOTIFICATION_ID], errors=("Unauthorized", "NotFound", "InternalError")),
-  },
-  "/api/audit-logs": {"get": operation("Optional global audit list across all events owned by the authenticated caller", schema="AuditLogPage", parameters=PAGE)},
+  "/api/events/{eventId}/budget/categories": _collection("BudgetCategories", "BudgetCategoryInput", [ID, *list_query]),
+  "/api/events/{eventId}/budget/categories/{categoryId}": _item("BudgetCategories", "BudgetCategoryUpdate", [ID, CATEGORY_ID]),
+  "/api/events/{eventId}/budget-categories": _collection("BudgetCategories", "BudgetCategoryInput", [ID, *list_query]),
+  "/api/events/{eventId}/budget-categories/{categoryId}": _item("BudgetCategories", "BudgetCategoryUpdate", [ID, CATEGORY_ID]),
+  "/api/events/{eventId}/budget-categories/{categoryId}/budget": {"get": operation("Get budget category aggregate", schema="BudgetCategory", parameters=[ID, CATEGORY_ID], errors=("Unauthorized", "NotFound", "InternalError"))},
+  "/api/events/{eventId}/budget-categories/{categoryId}/expenses": _collection("Expenses", "ExpenseInput", [ID, CATEGORY_ID, *list_query]),
+  "/api/events/{eventId}/budget-categories/{categoryId}/expenses/{expenseId}": _item("Expenses", "ExpenseUpdate", [ID, CATEGORY_ID, EXPENSE_ID]),
+  "/api/events/{eventId}/expenses": _collection("Expenses", "LegacyExpenseInput", [ID, EXPENSE_FILTER, *PAGE, SORT]),
+  "/api/events/{eventId}/expenses/{expenseId}": _item("Expenses", "LegacyExpenseUpdate", [ID, EXPENSE_ID]),
+  "/api/events/{eventId}/schedule-items": _collection("ScheduleItems", "ScheduleItemInput", [ID, *list_query]),
+  "/api/events/{eventId}/schedule-items/{scheduleItemId}": _item("ScheduleItems", "ScheduleItemInput", [ID, SCHEDULE_ID]),
+  "/api/events/{eventId}/vendors": _collection("Vendors", "VendorInput", [ID, *list_query]),
+  "/api/events/{eventId}/vendors/{vendorId}": _item("Vendors", "VendorInput", [ID, VENDOR_ID]),
+  "/api/events/{eventId}/vendors/{vendorId}/payments": _collection("VendorPayments", "VendorPaymentInput", [ID, VENDOR_ID, *list_query]),
+  "/api/events/{eventId}/vendors/{vendorId}/payments/{paymentId}": _item("VendorPayments", "VendorPaymentInput", [ID, VENDOR_ID, PAYMENT_ID]),
+  "/api/notifications": {"get": operation("List notifications", schema="NotificationPage", parameters=list_query)},
+  "/api/notifications/{notificationId}": _item("Notifications", "NotificationUpdate", [NOTIFICATION_ID]),
+  "/api/audit-logs": {"get": operation("List audit records across events owned by the caller", schema="AuditLogPage", parameters=list_query)},
  }
- return {"openapi": "3.0.3", "info": {"title": "EventForge API", "version": "1.0.0", "description": "Owner-scoped event planning API. JSON money values are fixed two-decimal strings."},
-         "paths": paths, "components": {"securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT", "description": "Paste the JWT returned by register or login."}},
-         "responses": _responses(), "schemas": _schemas()}}
+ return {"openapi": "3.0.3", "info": {"title": "EventForge API", "version": "1.0.0", "description": "Owner-scoped event planning API. Monetary values are fixed two-decimal strings."}, "paths": paths,
+         "components": {"securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}}, "responses": _responses(), "schemas": _schemas()}}
 
 
 def _responses() -> dict:
  error = {"description": "Error response", "content": {JSON: {"schema": ref("Error")}}}
- return {"ValidationError": {**error, "description": "Malformed JSON or invalid request data."}, "Unauthorized": {**error, "description": "Missing, invalid, or expired bearer token."}, "Forbidden": {**error, "description": "The caller is not allowed to access this resource."}, "NotFound": {**error, "description": "Resource not found in the caller's scope."}, "Conflict": {**error, "description": "A domain rule prevents this operation."}, "InternalError": {**error, "description": "Unexpected server error."}}
+ return {"ValidationError": {**error, "description": "Malformed JSON, invalid query parameter, or invalid request data."}, "Unauthorized": {**error, "description": "Missing, invalid, or expired bearer token."}, "NotFound": {**error, "description": "Resource not found in the caller's scope."}, "Conflict": {**error, "description": "A domain rule prevents this operation."}, "InternalError": {**error, "description": "Unexpected server error."}}
 
 
 def _schemas() -> dict:
  money = {"type": "string", "pattern": r"^-?\d+\.\d{2}$", "example": "125.00"}
  identifier = {"type": "integer", "format": "int64", "example": 1}
- opaque_id = {"type": "string", "example": "1"}
  timestamp = {"type": "string", "format": "date-time"}
- page = lambda item: {"type": "object", "required": ["items", "total", "limit", "offset"], "properties": {"items": {"type": "array", "items": ref(item)}, "total": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}, "offset": {"type": "integer", "minimum": 0}}}
+ page = lambda item: {"type": "object", "required": ["items", "total", "page", "size"], "properties": {"items": {"type": "array", "items": ref(item)}, "total": {"type": "integer", "minimum": 0}, "page": {"type": "integer", "minimum": 1}, "size": {"type": "integer", "minimum": 1, "maximum": 100}}}
  return {
-  "OpenApiDocument": {"type": "object", "description": "The OpenAPI 3.0.3 document served by this endpoint."}, "Health": {"type": "object", "required": ["status"], "properties": {"status": {"type": "string", "example": "ok"}}},
+  "OpenApiDocument": {"type": "object"}, "Health": {"type": "object", "required": ["status"], "properties": {"status": {"type": "string", "example": "ok"}}},
   "Error": {"type": "object", "required": ["timestamp", "status", "error", "message", "path"], "properties": {"timestamp": timestamp, "status": {"type": "integer"}, "error": {"type": "string"}, "message": {"type": "string"}, "path": {"type": "string"}}},
   "User": {"type": "object", "required": ["id", "email"], "properties": {"id": identifier, "email": {"type": "string", "format": "email"}, "created_at": timestamp}}, "Credentials": {"type": "object", "required": ["email", "password"], "properties": {"email": {"type": "string", "format": "email"}, "password": {"type": "string", "format": "password", "minLength": 8}}}, "AuthResponse": {"type": "object", "required": ["user", "token"], "properties": {"user": ref("User"), "token": {"type": "string"}}},
-  "EventInput": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}, "description": {"type": "string", "nullable": True}, "start_date": {"type": "string", "format": "date", "nullable": True}, "end_date": {"type": "string", "format": "date", "nullable": True}, "capacity": {"type": "integer", "minimum": 0, "nullable": True}, "planned_budget": {**money, "nullable": True}}}, "Event": {"allOf": [ref("EventInput"), {"type": "object", "required": ["id", "owner_id"], "properties": {"id": identifier, "owner_id": identifier, "created_at": timestamp, "updated_at": timestamp}}]}, "EventsList": page("Event"),
-  "TaskInput": {"type": "object", "properties": {"title": {"type": "string"}, "description": {"type": "string", "nullable": True}, "status": {"type": "string", "enum": ["pending", "in_progress", "blocked", "completed", "cancelled"]}, "priority": {"type": "string", "enum": ["low", "medium", "high"]}, "due_at": {**timestamp, "nullable": True}, "dependency_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": True}}}, "Task": {"allOf": [ref("TaskInput"), {"type": "object", "required": ["id", "event_id"], "properties": {"id": identifier, "event_id": identifier, "created_at": timestamp, "updated_at": timestamp}}]}, "TasksList": {"type": "array", "items": ref("Task")},
-  "GuestInput": {"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string", "format": "email", "nullable": True}, "status": {"type": "string", "enum": ["invited", "accepted", "declined"]}}}, "Guest": {"allOf": [ref("GuestInput"), {"type": "object", "required": ["id", "event_id"], "properties": {"id": identifier, "event_id": identifier, "created_at": timestamp, "updated_at": timestamp}}]}, "GuestsList": page("Guest"),
-  "BudgetCategoryInput": {"type": "object", "required": ["name", "planned_amount"], "properties": {"name": {"type": "string", "minLength": 1}, "planned_amount": money}}, "BudgetCategoryUpdate": {"type": "object", "minProperties": 1, "properties": {"name": {"type": "string", "minLength": 1}, "planned_amount": money}}, "BudgetCategory": {"allOf": [ref("BudgetCategoryInput"), {"type": "object", "required": ["id", "event_id", "actual_amount", "remaining_amount", "spent_percent"], "properties": {"id": identifier, "event_id": identifier, "actual_amount": money, "remaining_amount": money, "spent_percent": money}}]}, "BudgetCategoriesList": {"type": "array", "items": ref("BudgetCategory")}, "BudgetAggregate": {"type": "object", "required": ["event_id", "planned_amount", "actual_amount", "remaining_amount", "spent_percent", "categories"], "properties": {"event_id": identifier, "planned_amount": money, "actual_amount": money, "remaining_amount": money, "spent_percent": money, "categories": {"type": "array", "items": {"type": "object", "required": ["category", "expense_count"], "properties": {"category": ref("BudgetCategory"), "expense_count": {"type": "integer", "minimum": 0}}}}}},
-  "ExpenseInput": {"type": "object", "required": ["category_id", "description", "actual_amount"], "properties": {"category_id": identifier, "description": {"type": "string", "minLength": 1}, "actual_amount": money, "incurred_at": {**timestamp, "nullable": True}}}, "ExpenseUpdate": {"type": "object", "minProperties": 1, "properties": {"category_id": identifier, "description": {"type": "string", "minLength": 1}, "actual_amount": money, "incurred_at": {**timestamp, "nullable": True}}}, "Expense": {"allOf": [ref("ExpenseInput"), {"type": "object", "required": ["id", "event_id"], "properties": {"id": identifier, "event_id": identifier}}]}, "ExpensesList": {"type": "array", "items": ref("Expense")},
-  "ScheduleItemInput": {"type": "object", "required": ["title", "start_at", "end_at"], "properties": {"title": {"type": "string", "minLength": 1}, "description": {"type": "string", "nullable": True}, "start_at": timestamp, "end_at": timestamp}}, "ScheduleItem": {"allOf": [ref("ScheduleItemInput"), {"type": "object", "required": ["id", "event_id"], "properties": {"id": identifier, "event_id": identifier, "created_at": timestamp, "updated_at": timestamp}}]}, "ScheduleItemsList": {"type": "array", "items": ref("ScheduleItem")},
-  "VendorInput": {"type": "object", "required": ["name", "total_amount"], "properties": {"name": {"type": "string", "minLength": 1}, "total_amount": money, "contact_name": {"type": "string", "nullable": True}, "contact_email": {"type": "string", "format": "email", "nullable": True}}}, "Vendor": {"allOf": [ref("VendorInput"), {"type": "object", "required": ["id", "event_id", "totalPaid", "outstanding"], "properties": {"id": identifier, "event_id": identifier, "totalPaid": money, "outstanding": money}}]}, "VendorsList": {"type": "array", "items": ref("Vendor")},
-  "VendorPaymentInput": {"type": "object", "required": ["amount", "paid_on"], "properties": {"amount": money, "paid_on": {"type": "string", "format": "date"}, "reference": {"type": "string", "nullable": True}}}, "VendorPayment": {"allOf": [ref("VendorPaymentInput"), {"type": "object", "required": ["id", "vendor_id"], "properties": {"id": identifier, "vendor_id": identifier, "created_at": timestamp, "updated_at": timestamp}}]}, "VendorPaymentsList": {"type": "array", "items": ref("VendorPayment")},
-  "Notification": {"type": "object", "required": ["id", "recipient_id", "kind", "title", "message", "is_read", "created_at"], "properties": {"id": identifier, "recipient_id": identifier, "event_id": {**identifier, "nullable": True}, "task_id": {**identifier, "nullable": True}, "kind": {"type": "string"}, "title": {"type": "string"}, "message": {"type": "string"}, "is_read": {"type": "boolean"}, "read_at": {**timestamp, "nullable": True}, "created_at": timestamp}}, "NotificationPage": page("Notification"),
-  "AuditLog": {"type": "object", "required": ["id", "owner_id", "event_id", "action", "entity_type", "entity_id", "occurred_at"], "properties": {"id": identifier, "owner_id": identifier, "event_id": identifier, "action": {"type": "string"}, "entity_type": {"type": "string"}, "entity_id": identifier, "actor_id": {**identifier, "nullable": True}, "occurred_at": timestamp, "details": {"type": "object", "additionalProperties": True}}}, "AuditLogPage": page("AuditLog"),
+  "EventInput": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}, "description": {"type": "string", "nullable": True}, "start_date": {"type": "string", "format": "date", "nullable": True}, "end_date": {"type": "string", "format": "date", "nullable": True}, "capacity": {"type": "integer", "minimum": 0, "nullable": True}, "planned_budget": {**money, "nullable": True}}}, "Event": {"allOf": [ref("EventInput"), {"type": "object", "required": ["id", "owner_id", "accepted_guest_count"], "properties": {"id": identifier, "owner_id": identifier, "accepted_guest_count": {"type": "integer", "minimum": 0, "description": "Computed count of guests with accepted status."}, "created_at": timestamp, "updated_at": timestamp}}]}, "EventsList": page("Event"),
+  "TaskInput": {"type": "object", "properties": {"title": {"type": "string"}, "description": {"type": "string", "nullable": True}, "status": {"type": "string", "enum": ["pending", "in_progress", "blocked", "completed", "cancelled"]}, "priority": {"type": "string", "enum": ["low", "medium", "high"]}, "due_at": {**timestamp, "nullable": True}, "dependency_ids": {"type": "array", "items": identifier, "uniqueItems": True}}}, "Task": {"allOf": [ref("TaskInput"), {"type": "object", "properties": {"id": identifier, "event_id": identifier}}]}, "TasksList": page("Task"),
+  "GuestInput": {"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string", "format": "email", "nullable": True}, "status": {"type": "string", "enum": ["invited", "accepted", "declined"]}}}, "Guest": {"allOf": [ref("GuestInput"), {"type": "object", "properties": {"id": identifier, "event_id": identifier}}]}, "GuestsList": page("Guest"),
+  "BudgetCategoryInput": {"type": "object", "required": ["name", "planned_amount"], "properties": {"name": {"type": "string", "minLength": 1}, "planned_amount": money}}, "BudgetCategoryUpdate": {"type": "object", "minProperties": 1, "properties": {"name": {"type": "string", "minLength": 1}, "planned_amount": money}}, "BudgetCategory": {"allOf": [ref("BudgetCategoryInput"), {"type": "object", "properties": {"id": identifier, "event_id": identifier, "actual_amount": money, "remaining_amount": money, "spent_percent": money}}]}, "BudgetCategoriesList": page("BudgetCategory"), "BudgetAggregate": {"type": "object", "properties": {"event_id": identifier, "planned_amount": money, "actual_amount": money, "remaining_amount": money, "spent_percent": money, "categories": {"type": "array", "items": ref("BudgetCategory")}}},
+  "ExpenseInput": {"type": "object", "required": ["name", "amount", "spent_on"], "properties": {"name": {"type": "string", "minLength": 1}, "amount": money, "spent_on": {"type": "string", "format": "date"}, "notes": {"type": "string", "nullable": True}}}, "ExpenseUpdate": {"type": "object", "minProperties": 1, "properties": {"name": {"type": "string", "minLength": 1}, "amount": money, "spent_on": {"type": "string", "format": "date"}, "notes": {"type": "string", "nullable": True}}}, "Expense": {"allOf": [ref("ExpenseInput"), {"type": "object", "required": ["id", "event_id", "category_id"], "properties": {"id": identifier, "event_id": identifier, "category_id": identifier}}]}, "ExpensesList": page("Expense"),
+  "LegacyExpenseInput": {"type": "object", "required": ["category_id", "description", "actual_amount"], "properties": {"category_id": identifier, "description": {"type": "string"}, "actual_amount": money, "incurred_at": {**timestamp, "nullable": True}}}, "LegacyExpenseUpdate": {"type": "object", "minProperties": 1, "properties": {"category_id": identifier, "description": {"type": "string"}, "actual_amount": money, "incurred_at": {**timestamp, "nullable": True}}},
+  "ScheduleItemInput": {"type": "object", "properties": {"title": {"type": "string"}, "start_at": timestamp, "end_at": timestamp}}, "ScheduleItem": {"allOf": [ref("ScheduleItemInput"), {"type": "object", "properties": {"id": identifier, "event_id": identifier}}]}, "ScheduleItemsList": page("ScheduleItem"),
+  "VendorInput": {"type": "object", "properties": {"name": {"type": "string"}, "total_amount": money}}, "Vendor": {"allOf": [ref("VendorInput"), {"type": "object", "properties": {"id": identifier, "event_id": identifier}}]}, "VendorsList": page("Vendor"), "VendorPaymentInput": {"type": "object", "properties": {"amount": money, "paid_on": {"type": "string", "format": "date"}}}, "VendorPayment": {"allOf": [ref("VendorPaymentInput"), {"type": "object", "properties": {"id": identifier, "vendor_id": identifier}}]}, "VendorPaymentsList": page("VendorPayment"),
+  "Notification": {"type": "object", "properties": {"id": identifier, "is_read": {"type": "boolean"}}}, "NotificationUpdate": {"type": "object", "properties": {"is_read": {"type": "boolean"}}}, "NotificationsList": page("Notification"), "NotificationPage": page("Notification"),
+  "AuditLog": {"type": "object", "properties": {"id": identifier, "event_id": identifier, "action": {"type": "string"}, "occurred_at": timestamp}}, "AuditLogPage": page("AuditLog"),
  }

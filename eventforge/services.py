@@ -13,6 +13,7 @@ from eventforge.resource_services.budget import BudgetResourceService
 from eventforge.resource_services.notifications import NotificationResourceService
 from eventforge.security import hash_password, issue_token, verify_password
 from eventforge.config import Settings
+from eventforge.validation import decimal_value, parse_date, require_text
 
 
 class EventForgeService:
@@ -30,10 +31,10 @@ class EventForgeService:
   return {'user':serialize(user),'token':issue_token(int(user['id']),self._s)}
 
  # Core facade delegates ----------------------------------------------------
- def list_events(self,u:int,l:int,o:int)->dict[str,Any]: return self._core.list_events(u,limit=l,offset=o)
+ def list_events(self,u:int,l:int,o:int,filters:dict[str,Any]|None=None,sort:str='-id')->dict[str,Any]: return self._core.list_events(u,limit=l,offset=o,filters=filters,sort=sort)
  def event(self,u:int,e:int)->dict[str,Any]: return self._core.get_event(u,e)
- def create_event(self,u:int,d:dict[str,Any])->dict[str,Any]: return self._core.create_event(u,self._event_data(d))
- def update_event(self,u:int,e:int,d:dict[str,Any])->dict[str,Any]: return self._core.update_event(u,e,self._event_data(d))
+ def create_event(self,u:int,d:dict[str,Any])->dict[str,Any]: return self._core.create_event(u,self._event_data(d,required=True))
+ def update_event(self,u:int,e:int,d:dict[str,Any])->dict[str,Any]: return self._core.update_event(u,e,self._event_data(d,required=False))
  def delete_event(self,u:int,e:int)->None:self._core.delete_event(u,e)
  def list_tasks(self,u:int,e:int)->list[dict[str,Any]]:return self._core.list_tasks(u,e)
  def task(self,u:int,e:int,i:int)->dict[str,Any]:return self._core.get_task(u,e,i)
@@ -57,19 +58,22 @@ class EventForgeService:
   with self._r.transaction():self._r.event(u,e);return self._budget_dto(self._budget.update_category(str(e),str(c),str(u),name=d.get('name'),planned_amount=d.get('planned_amount')))
  def delete_budget_category(self,u:int,e:int,c:int)->None:
   with self._r.transaction():self._r.event(u,e);self._budget.delete_category(str(e),str(c),str(u))
- def list_expenses(self,u:int,e:int,category_id:int|None=None)->list[dict[str,Any]]:self._r.event(u,e);return self._budget_dto(self._budget.list_expenses(str(e),category_id=None if category_id is None else str(category_id)))
- def expense(self,u:int,e:int,x:int)->dict[str,Any]:self._r.event(u,e);return self._budget_dto(self._budget.get_expense(str(e),str(x)))
- def _incurred_at(self,value:Any)->datetime|None:
-  if value is None:return None
-  if not isinstance(value,str):raise ValidationError('incurred_at must be an ISO-8601 datetime')
-  try:return datetime.fromisoformat(value.replace('Z','+00:00'))
-  except ValueError:raise ValidationError('incurred_at must be an ISO-8601 datetime') from None
- def create_expense(self,u:int,e:int,d:dict[str,Any])->dict[str,Any]:
-  with self._r.transaction():self._r.event(u,e);return self._budget_dto(self._budget.create_expense(str(e),str(u),category_id=str(d.get('category_id','')),description=d.get('description'),actual_amount=d.get('actual_amount'),incurred_at=self._incurred_at(d.get('incurred_at'))))
- def update_expense(self,u:int,e:int,x:int,d:dict[str,Any])->dict[str,Any]:
-  with self._r.transaction():self._r.event(u,e);return self._budget_dto(self._budget.update_expense(str(e),str(x),str(u),category_id=None if 'category_id' not in d else str(d['category_id']),description=d.get('description'),actual_amount=d.get('actual_amount'),incurred_at=self._incurred_at(d['incurred_at']) if 'incurred_at' in d else None))
- def delete_expense(self,u:int,e:int,x:int)->None:
-  with self._r.transaction():self._r.event(u,e);self._budget.delete_expense(str(e),str(x),str(u))
+ def list_expenses(self,u:int,e:int,c:int)->list[dict[str,Any]]:self._r.event(u,e);return self._budget_dto(self._budget.list_expenses(str(e),str(c)))
+ def expense(self,u:int,e:int,c:int,x:int)->dict[str,Any]:self._r.event(u,e);return self._budget_dto(self._budget.get_expense(str(e),str(c),str(x)))
+ def _expense_data(self,d:dict[str,Any],*,creating:bool)->dict[str,Any]:
+  allowed={'name','amount','spent_on','notes'};unknown=set(d)-allowed
+  if unknown:raise ValidationError('unsupported expense fields: '+', '.join(sorted(unknown)))
+  if creating and set(d) - {'notes'} != {'name','amount','spent_on'}:raise ValidationError('name, amount, and spent_on are required')
+  if not creating and not d:raise ValidationError('at least one expense field is required')
+  return d
+ def create_expense(self,u:int,e:int,c:int,d:dict[str,Any])->dict[str,Any]:
+  d=self._expense_data(d,creating=True)
+  with self._r.transaction():self._r.event(u,e);return self._budget_dto(self._budget.create_expense(str(e),str(c),str(u),name=d['name'],amount=d['amount'],spent_on=d['spent_on'],notes=d.get('notes')))
+ def update_expense(self,u:int,e:int,c:int,x:int,d:dict[str,Any])->dict[str,Any]:
+  d=self._expense_data(d,creating=False)
+  with self._r.transaction():self._r.event(u,e);return self._budget_dto(self._budget.update_expense(str(e),str(c),str(x),str(u),name=d.get('name'),amount=d.get('amount'),spent_on=d.get('spent_on'),notes=d.get('notes'),notes_supplied='notes' in d))
+ def delete_expense(self,u:int,e:int,c:int,x:int)->None:
+  with self._r.transaction():self._r.event(u,e);self._budget.delete_expense(str(e),str(c),str(x),str(u))
 
  # Operations facade.
  def list_schedule_items(self,u:int,e:int):return self._operations.list_schedule_items(u,e)
@@ -95,10 +99,25 @@ class EventForgeService:
  def nested_create(self,t:str,u:int,e:int,d:dict[str,Any])->dict[str,Any]:self._r.event(u,e);return serialize(self._r._insert(t,{'event_id':e,**d}))
  def nested_update(self,t:str,u:int,e:int,i:int,d:dict[str,Any])->dict[str,Any]:self._r.nested(t,u,e,i);return serialize(self._r._update(t,i,d))
  def nested_delete(self,t:str,u:int,e:int,i:int)->None:self._r.nested(t,u,e,i);self._r._delete(t,i)
- def _event_data(self,d:dict[str,Any])->dict[str,Any]:
-  if not isinstance(d.get('name'),str) or not d['name'].strip():raise ValidationError('name is required')
-  allowed={'name','description','start_date','end_date','capacity','planned_budget'};out={k:v for k,v in d.items() if k in allowed}
-  if 'planned_budget' in out:out['planned_budget']=Decimal(str(out['planned_budget']))
+ def _event_data(self,d:dict[str,Any],required:bool)->dict[str,Any]:
+  allowed={'name','description','start_date','end_date','capacity','planned_budget'}
+  if required:
+   missing=allowed-set(d)
+   if missing:raise ValidationError('missing required event fields: '+', '.join(sorted(missing)))
+  out={k:v for k,v in d.items() if k in allowed}
+  if not out:raise ValidationError('at least one event field is required')
+  if 'name' in out:out['name']=require_text(out['name'],'name')
+  if 'description' in out:out['description']=require_text(out['description'],'description')
+  for field in ('start_date','end_date'):
+   if field in out:out[field]=parse_date(out[field],field)
+  if 'start_date' in out and 'end_date' in out and out['end_date'] < out['start_date']:raise ValidationError('end_date must not be before start_date')
+  if 'capacity' in out:
+   value=out['capacity']
+   if isinstance(value,bool) or not isinstance(value,int) or value<0:raise ValidationError('capacity must be a non-negative integer')
+  if 'planned_budget' in out:
+   value=decimal_value(out['planned_budget'],'planned_budget')
+   if value<0:raise ValidationError('planned_budget must be non-negative')
+   out['planned_budget']=value
   return out
  # Notification/audit facade.  The scheduler uses this same facade as HTTP handlers.
  def list_notifications(self,u:int,l:int,o:int)->dict[str,Any]:return serialize(self._notifications.list_notifications(str(u),limit=l,offset=o))

@@ -16,4 +16,4 @@ def decode_token(token: str, settings: Settings) -> int:
 def authenticated_user_id(handler: Any) -> int:
     header=handler.request.headers.get("Authorization", "")
     if not header.startswith("Bearer ") or len(header.split()) != 2: raise AuthenticationError("bearer token is required")
-    return decode_token(header.split()[1], handler.settings)
+    return decode_token(header.split()[1], handler.app_settings)

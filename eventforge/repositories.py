@@ -167,7 +167,7 @@ class Repository:
  def _budget_category(self,row:dict[str,Any])->BudgetCategoryRecord:
   return BudgetCategoryRecord(str(row['id']),str(row['event_id']),row['name'],Decimal(str(row['planned_amount'])),row.get('created_at'),row.get('updated_at'))
  def _budget_expense(self,row:dict[str,Any])->ExpenseRecord:
-  return ExpenseRecord(str(row['id']),str(row['event_id']),str(row['budget_category_id']),row['name'],Decimal(str(row['amount'])),row.get('spent_on'),row.get('created_at'),row.get('updated_at'))
+  return ExpenseRecord(str(row['id']),str(row['event_id']),str(row['budget_category_id']),row['name'],Decimal(str(row['amount'])),row['spent_on'],row.get('notes'),row.get('created_at'),row.get('updated_at'))
  def _budget_one(self,q:Any)->dict[str,Any]|None:
   row=q.fetchone(); return dict(zip(q.column_names,row)) if row else None
  def get_category(self,event_id:str,category_id:str)->BudgetCategoryRecord|None:
@@ -185,25 +185,29 @@ class Repository:
   return self._budget_category(row)
  def delete_category(self,event_id:str,category_id:str)->None:
   with self._cursor(write=True) as q:q.execute('DELETE FROM budget_categories WHERE id=%s AND event_id=%s',(category_id,event_id))
- def get_expense(self,event_id:str,expense_id:str)->ExpenseRecord|None:
-  with self._cursor() as q:q.execute('SELECT x.*,c.event_id FROM expenses x JOIN budget_categories c ON c.id=x.budget_category_id WHERE x.id=%s AND c.event_id=%s',(expense_id,event_id));row=self._budget_one(q)
+ def get_expense(self,event_id:str,category_id:str,expense_id:str)->ExpenseRecord|None:
+  sql='SELECT x.*,c.event_id FROM expenses x JOIN budget_categories c ON c.id=x.budget_category_id WHERE x.id=%s AND x.budget_category_id=%s AND c.event_id=%s'
+  with self._cursor() as q:q.execute(sql,(expense_id,category_id,event_id));row=self._budget_one(q)
   return self._budget_expense(row) if row else None
- def list_expenses(self,event_id:str,category_id:str|None=None)->list[ExpenseRecord]:
-  sql='SELECT x.*,c.event_id FROM expenses x JOIN budget_categories c ON c.id=x.budget_category_id WHERE c.event_id=%s';args:list[Any]=[event_id]
-  if category_id is not None:sql+=' AND c.id=%s';args.append(category_id)
-  with self._cursor() as q:q.execute(sql,tuple(args));return [self._budget_expense(dict(zip(q.column_names,row))) for row in q.fetchall()]
+ def list_expenses(self,event_id:str,category_id:str)->list[ExpenseRecord]:
+  sql='SELECT x.*,c.event_id FROM expenses x JOIN budget_categories c ON c.id=x.budget_category_id WHERE x.budget_category_id=%s AND c.event_id=%s ORDER BY x.id'
+  with self._cursor() as q:q.execute(sql,(category_id,event_id));return [self._budget_expense(dict(zip(q.column_names,row))) for row in q.fetchall()]
  def insert_expense(self,expense:ExpenseRecord)->ExpenseRecord:
+  sql='INSERT INTO expenses(budget_category_id,name,amount,spent_on,notes) SELECT id,%s,%s,%s,%s FROM budget_categories WHERE id=%s AND event_id=%s'
   with self._cursor(write=True) as q:
-   q.execute('INSERT INTO expenses(budget_category_id,name,amount,spent_on) VALUES(%s,%s,%s,%s)',(expense.category_id,expense.description,expense.actual_amount,expense.incurred_at or date.today()));new=q.lastrowid
-  result=self.get_expense(expense.event_id,str(new))
-  return result or expense
+   q.execute(sql,(expense.name,expense.amount,expense.spent_on,expense.notes,expense.category_id,expense.event_id));new=q.lastrowid
+  result=self.get_expense(expense.event_id,expense.category_id,str(new))
+  if not result:raise NotFoundError('budget category was not found')
+  return result
  def update_expense(self,expense:ExpenseRecord)->ExpenseRecord:
-  with self._cursor(write=True) as q:q.execute('UPDATE expenses x JOIN budget_categories c ON c.id=x.budget_category_id SET x.budget_category_id=%s,x.name=%s,x.amount=%s,x.spent_on=%s WHERE x.id=%s AND c.event_id=%s',(expense.category_id,expense.description,expense.actual_amount,expense.incurred_at or date.today(),expense.id,expense.event_id))
-  result=self.get_expense(expense.event_id,expense.id)
+  sql='UPDATE expenses x JOIN budget_categories c ON c.id=x.budget_category_id SET x.name=%s,x.amount=%s,x.spent_on=%s,x.notes=%s WHERE x.id=%s AND x.budget_category_id=%s AND c.event_id=%s'
+  with self._cursor(write=True) as q:q.execute(sql,(expense.name,expense.amount,expense.spent_on,expense.notes,expense.id,expense.category_id,expense.event_id))
+  result=self.get_expense(expense.event_id,expense.category_id,expense.id)
   if not result:raise NotFoundError('expense was not found')
   return result
- def delete_expense(self,event_id:str,expense_id:str)->None:
-  with self._cursor(write=True) as q:q.execute('DELETE x FROM expenses x JOIN budget_categories c ON c.id=x.budget_category_id WHERE x.id=%s AND c.event_id=%s',(expense_id,event_id))
+ def delete_expense(self,event_id:str,category_id:str,expense_id:str)->None:
+  sql='DELETE x FROM expenses x JOIN budget_categories c ON c.id=x.budget_category_id WHERE x.id=%s AND x.budget_category_id=%s AND c.event_id=%s'
+  with self._cursor(write=True) as q:q.execute(sql,(expense_id,category_id,event_id))
  def notify_spending_threshold_once(self,*,event_id:str,category_id:str,spent_amount:Decimal,planned_amount:Decimal,threshold:Decimal)->bool:
   key=f'budget:{event_id}:{category_id}:{threshold}'
   with self._cursor(write=True) as q:

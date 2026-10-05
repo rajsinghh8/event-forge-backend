@@ -7,7 +7,7 @@ from eventforge.security import authenticated_user_id
 from eventforge.validation import json_body
 LOGGER=logging.getLogger(__name__)
 class BaseHandler(tornado.web.RequestHandler):
- def initialize(self,service:Any,settings:Any)->None:self.service=service;self.settings=settings
+ def initialize(self,service:Any,settings:Any)->None:self.service=service;self.app_settings=settings
  def set_default_headers(self)->None:self.set_header('Content-Type','application/json')
  def write_json(self,value:Any,status:int=200)->None:self.set_status(status);self.finish(value)
  def write_error(self,status_code:int,**kwargs:Any)->None:

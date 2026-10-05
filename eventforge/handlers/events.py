@@ -1,8 +1,24 @@
 from __future__ import annotations
 from eventforge.handlers.base import AuthenticatedHandler
-from eventforge.validation import pagination
+from eventforge.validation import pagination, query_options
+
+def _query_page(rows, limit, offset, query):
+ sort=query.pop('sort'); text=query.get('text','').lower(); result=[]
+ for row in rows:
+  if text and text not in str(row.get('name',row.get('title',''))).lower():continue
+  if any(str(row.get(key)) != str(value) for key,value in query.items() if key not in {'text','startDate','endDate'}):continue
+  # Task due dates and schedule-like dates use inclusive ISO date boundaries.
+  date_value=str(row.get('due_at',row.get('start_date','')))
+  if query.get('startDate') and date_value[:10] < query['startDate']:continue
+  if query.get('endDate') and date_value[:10] > query['endDate']:continue
+  result.append(row)
+ field=sort.lstrip('-');result.sort(key=lambda row:(row.get(field) is None,row.get(field)),reverse=sort.startswith('-'))
+ return {'items':result[offset:offset+limit],'total':len(result),'limit':limit,'offset':offset}
+
 class EventsHandler(AuthenticatedHandler):
- async def get(self):l,o=pagination(self.request.arguments);self.write_json(self.service.list_events(self.user_id,l,o))
+ async def get(self):
+  l,o=pagination(self.request.arguments); query=query_options(self.request.arguments,allowed_sort={'id','name','start_date','created_at'},allowed_filters={'text','startDate','endDate'},default_sort='-id');sort=query.pop('sort')
+  self.write_json(self.service.list_events(self.user_id,l,o,query,sort))
  async def post(self):self.write_json(self.service.create_event(self.user_id,self.body()),201)
 class EventHandler(AuthenticatedHandler):
  async def get(self,event_id):self.write_json(self.service.event(self.user_id,int(event_id)))
@@ -13,10 +29,12 @@ class NestedHandler(AuthenticatedHandler):
  async def get(self,event_id,item_id=None):
   event=int(event_id)
   if self.table=='tasks':
-   self.write_json(self.service.list_tasks(self.user_id,event) if item_id is None else self.service.task(self.user_id,event,int(item_id)));return
+   if item_id is None:
+    l,o=pagination(self.request.arguments);query=query_options(self.request.arguments,allowed_sort={'id','title','due_at','priority','status'},allowed_filters={'text','status','priority','startDate','endDate'},default_sort='-id');rows=self.service.list_tasks(self.user_id,event);self.write_json(_query_page(rows,l,o,query));return
+   self.write_json(self.service.task(self.user_id,event,int(item_id)));return
   if self.table=='guests':
    if item_id is None:
-    limit,offset=pagination(self.request.arguments);self.write_json(self.service.list_guests(self.user_id,event,limit,offset))
+    limit,offset=pagination(self.request.arguments);query=query_options(self.request.arguments,allowed_sort={'id','name','status'},allowed_filters={'text','name','status'},default_sort='-id');result=self.service.list_guests(self.user_id,event,100,0);self.write_json(_query_page(result['items'],limit,offset,query))
    else:self.write_json(self.service.guest(self.user_id,event,int(item_id)))
    return
   if item_id is None:l,o=pagination(self.request.arguments);self.write_json(self.service.nested_list(self.table,self.user_id,event,l,o))

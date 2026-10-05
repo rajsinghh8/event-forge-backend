@@ -93,41 +93,51 @@ class CoreResourceService:
         payload = dict(values)
         event = self._repository.create_event(user_id, payload)
         result = _dto(event)
-        self._record(user_id, "event.created", "event", _id(result), result)
+        self._record(user_id, "create", "event", _id(result), result)
         return result
 
     def get_event(self, user_id: str, event_id: str) -> DTO:
-        return _dto(self._repository.get_event(user_id, event_id))
+        # Detail DTOs expose the live RSVP aggregate, not a stale denormalized value.
+        result = _dto(self._repository.get_event(user_id, event_id))
+        result["accepted_guest_count"] = self._repository.count_accepted_guests(user_id, event_id)
+        return result
 
-    def list_events(self, user_id: str, *, limit: int = 20, offset: int = 0) -> DTO:
+    def list_events(self, user_id: str, *, limit: int = 20, offset: int = 0, filters: Mapping[str, object] | None = None, sort: str = "-id") -> DTO:
         _pagination(limit, offset)
-        items, total = self._repository.list_events(user_id, limit=limit, offset=offset)
+        items, total = self._repository.list_events(user_id, limit=limit, offset=offset, filters=dict(filters or {}), sort=sort)
         return {"items": [_dto(item) for item in items], "total": total, "limit": limit, "offset": offset}
 
     @_mutation
     def update_event(self, user_id: str, event_id: str, values: Mapping[str, object]) -> DTO:
         result = _dto(self._repository.update_event(user_id, event_id, dict(values)))
-        self._record(user_id, "event.updated", "event", event_id, result)
+        self._record(user_id, "update", "event", event_id, result)
         return result
 
     @_mutation
     def delete_event(self, user_id: str, event_id: str) -> None:
         self._repository.get_event(user_id, event_id)
         self._repository.delete_event(user_id, event_id)
-        self._record(user_id, "event.deleted", "event", event_id, {"id": event_id})
+        self._record(user_id, "delete", "event", event_id, {"id": event_id})
 
     # Tasks
     @_mutation
     def create_task(self, user_id: str, event_id: str, values: Mapping[str, object]) -> DTO:
         self._repository.get_event(user_id, event_id)
         payload = dict(values)
+        title = payload.get("title")
+        priority = payload.get("priority")
+        if not isinstance(title, str) or not title.strip():
+            raise errors.ValidationError("title is required")
+        if not isinstance(priority, str) or priority not in {"low", "medium", "high"}:
+            raise errors.ValidationError("priority must be one of low, medium, high")
+        payload["title"] = title.strip()
         dependencies = self._dependencies(payload)
         self._validate_dependencies(user_id, event_id, dependencies)
         status = payload.setdefault("status", "pending")
         if status != "pending":
             raise errors.ValidationError("new tasks must start with status 'pending'")
         result = _dto(self._repository.create_task(user_id, event_id, payload))
-        self._record(user_id, "task.created", "task", _id(result), result)
+        self._record(user_id, "create", "task", _id(result), result)
         return result
 
     def get_task(self, user_id: str, event_id: str, task_id: str) -> DTO:
@@ -150,7 +160,7 @@ class CoreResourceService:
             self._validate_dependencies(user_id, event_id, dependencies)
             self._ensure_acyclic(user_id, event_id, task_id, dependencies)
         result = _dto(self._repository.update_task(user_id, event_id, task_id, payload))
-        self._record(user_id, "task.updated", "task", task_id, result)
+        self._record(user_id, "status_change" if "status" in payload else "update", "task", task_id, result)
         return result
 
     @_mutation
@@ -159,7 +169,7 @@ class CoreResourceService:
         if self._repository.list_task_dependents(user_id, event_id, task_id):
             raise errors.ConflictError("task cannot be deleted while another task depends on it")
         self._repository.delete_task(user_id, event_id, task_id)
-        self._record(user_id, "task.deleted", "task", task_id, {"id": task_id, "event_id": event_id})
+        self._record(user_id, "delete", "task", task_id, {"id": task_id, "event_id": event_id})
 
     # Guests
     @_mutation
@@ -169,7 +179,7 @@ class CoreResourceService:
         if payload.get("status") == "accepted":
             self._ensure_capacity(user_id, event_id, event)
         result = _dto(self._repository.create_guest(user_id, event_id, payload))
-        self._record(user_id, "guest.created", "guest", _id(result), result)
+        self._record(user_id, "create", "guest", _id(result), result)
         return result
 
     def get_guest(self, user_id: str, event_id: str, guest_id: str) -> DTO:
@@ -189,14 +199,14 @@ class CoreResourceService:
         if payload.get("status") == "accepted" and current.get("status") != "accepted":
             self._ensure_capacity(user_id, event_id, event)
         result = _dto(self._repository.update_guest(user_id, event_id, guest_id, payload))
-        self._record(user_id, "guest.updated", "guest", guest_id, result)
+        self._record(user_id, "status_change" if "status" in payload else "update", "guest", guest_id, result)
         return result
 
     @_mutation
     def delete_guest(self, user_id: str, event_id: str, guest_id: str) -> None:
         self._repository.get_guest(user_id, event_id, guest_id)
         self._repository.delete_guest(user_id, event_id, guest_id)
-        self._record(user_id, "guest.deleted", "guest", guest_id, {"id": guest_id, "event_id": event_id})
+        self._record(user_id, "delete", "guest", guest_id, {"id": guest_id, "event_id": event_id})
 
     def _record(self, user_id: str, action: str, resource: str, resource_id: str, details: Mapping[str, object]) -> None:
         safe = _dto(details)
