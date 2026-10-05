@@ -8,7 +8,7 @@
 | 4 Compile | passed (`python -m compileall`) |
 | 5 pytest | passed with 4 focused tests; 6 PostgreSQL integration cases honestly skipped because no reachable `DATABASE_URL`/PostgreSQL service exists |
 | 5 Boot verification | attempted 3/3 via `start.sh`; all failed at migration with `psycopg.OperationalError`: connection to `127.0.0.1:5432` refused |
-| 5 Public live probes | passed: gunicorn served `/health`, `/docs`, `/openapi.json` as 200 and unauthenticated `/events` as 401 |
+| 5 Public live probes | passed: gunicorn served `/health`, `/docs`, `/openapi.json` as 200 and unauthenticated `/events` as 401; factory probe observed 44/44 non-public routes reject missing Bearer tokens with 401 |
 | 5 Docker verification | failed/skipped honestly: Docker client is installed but daemon at `/var/run/docker.sock` is unavailable, so pull/build/run cannot execute |
 | 6 Reports | complete: `tests-artifacts/test_results.json`, `api_test_report.xlsx`, `project_report.docx` based only on observed results |
 
