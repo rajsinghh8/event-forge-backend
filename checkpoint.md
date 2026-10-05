@@ -42,3 +42,6 @@
 ## Unit status
 - Auth group: complete — added PBKDF2-SHA256 password hashing, dependency-free HS256 JWT validation, typed auth service/repository boundary, public DTOs, Bottle route registration, domain error HTTP mapping, and security unit tests.
 - Tasks & invitations resource group: complete. Added pure lifecycle/dependency and RSVP validation, repository ports, Oracle named-bind adapters (event counter locked for accepted RSVP), activity/notification contracts, and dependency-free unit tests.
+
+## Unit status
+- Schedule/vendor/payment/notification remediation group: complete — active Bottle handlers use schedule `description`, canonical vendor fields and filters, payment date/sort filtering, nullable notification `read_at`, and same-transaction activity records; source-contract coverage updated.

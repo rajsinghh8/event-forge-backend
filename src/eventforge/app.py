@@ -17,7 +17,20 @@ from .security import JwtCodec, PasswordHasher
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 EVENT_STATUSES = {"DRAFT", "PLANNED", "ACTIVE", "COMPLETED", "CANCELLED"}
 TASK_STATUSES = {"TODO", "IN_PROGRESS", "BLOCKED", "COMPLETED"}
+TASK_PRIORITIES = {"LOW", "MEDIUM", "HIGH", "URGENT"}
 RSVP_STATUSES = {"PENDING", "ACCEPTED", "DECLINED", "MAYBE"}
+TASK_TRANSITIONS = {
+    "TODO": {"IN_PROGRESS", "BLOCKED"},
+    "IN_PROGRESS": {"BLOCKED", "COMPLETED"},
+    "BLOCKED": {"IN_PROGRESS"},
+    "COMPLETED": set(),
+}
+RSVP_TRANSITIONS = {
+    "PENDING": {"ACCEPTED", "DECLINED", "MAYBE"},
+    "MAYBE": {"ACCEPTED", "DECLINED"},
+    "ACCEPTED": set(),
+    "DECLINED": set(),
+}
 
 
 class ApiError(Exception):
@@ -119,12 +132,12 @@ def openapi():
         },
     }
     resources = {
-        "tasks": {"fields": ["title", "status", "dependency_ids"], "extra": [{"name": "status", "in": "query", "schema": {"type": "string", "enum": sorted(TASK_STATUSES)}}]},
-        "invitations": {"fields": ["guest_name", "guest_email", "status"], "extra": [{"name": "status", "in": "query", "schema": {"type": "string", "enum": sorted(RSVP_STATUSES)}}]},
+        "tasks": {"fields": ["title", "status", "priority", "assignee", "deadline", "dependency_ids"], "extra": [{"name": "status", "in": "query", "schema": {"type": "string", "enum": sorted(TASK_STATUSES)}}, {"name": "priority", "in": "query", "schema": {"type": "string", "enum": sorted(TASK_PRIORITIES)}}, {"name": "assignee", "in": "query", "schema": {"type": "string"}}, {"name": "search", "in": "query", "schema": {"type": "string"}}, {"name": "sort", "in": "query", "schema": {"type": "string"}}, {"name": "order", "in": "query", "schema": {"type": "string", "enum": ["asc", "desc"]}}]},
+        "invitations": {"fields": ["guest_name", "guest_email", "status"], "extra": [{"name": "status", "in": "query", "schema": {"type": "string", "enum": sorted(RSVP_STATUSES)}}, {"name": "search", "in": "query", "schema": {"type": "string"}}, {"name": "sort", "in": "query", "schema": {"type": "string"}}, {"name": "order", "in": "query", "schema": {"type": "string", "enum": ["asc", "desc"]}}]},
         "budget-categories": {"fields": ["name", "planned_amount"], "extra": []},
         "expenses": {"fields": ["category_id", "description", "amount", "expenditure_at"], "extra": []},
-        "schedule": {"fields": ["title", "start_time", "end_time", "details"], "extra": [{"name": "from", "in": "query", "schema": {"type": "string", "format": "date-time"}}, {"name": "to", "in": "query", "schema": {"type": "string", "format": "date-time"}}]},
-        "vendors": {"fields": ["name", "service_type", "contact_name", "contact_email", "booking_reference", "cost"], "extra": []},
+        "schedule": {"fields": ["title", "start_time", "end_time", "description"], "extra": [{"name": "search", "in": "query", "schema": {"type": "string"}}, {"name": "sort", "in": "query", "schema": {"type": "string", "enum": ["start_time", "-start_time", "title", "-title"]}}, {"name": "from", "in": "query", "schema": {"type": "string", "format": "date-time"}}, {"name": "to", "in": "query", "schema": {"type": "string", "format": "date-time"}}]},
+        "vendors": {"fields": ["name", "service_type", "contact_details", "booking_status", "cost"], "extra": [{"name": "search", "in": "query", "schema": {"type": "string"}}, {"name": "service_type", "in": "query", "schema": {"type": "string"}}, {"name": "booking_status", "in": "query", "schema": {"type": "string"}}, {"name": "sort", "in": "query", "schema": {"type": "string", "enum": ["name", "-name", "cost", "-cost", "service_type", "-service_type"]}}]},
     }
     for name, definition in resources.items():
         schema = {"type": "object", "properties": {field: {"type": "string"} for field in definition["fields"]}}
@@ -141,11 +154,11 @@ def openapi():
     payment_schema = {"type": "object", "required": ["amount"], "properties": {"amount": {"type": "number"}, "payment_at": {"type": "string", "format": "date-time"}, "note": {"type": "string"}}}
     vendor_id = path_parameter("vendor_id")
     paths["/api/events/{event_id}/vendors/{vendor_id}/payments"] = {
-        "get": {"summary": "List vendor payments", "parameters": [event_id, vendor_id] + pagination_parameters(), "responses": ok},
+        "get": {"summary": "List vendor payments", "parameters": [event_id, vendor_id] + pagination_parameters(({"name": "from", "in": "query", "schema": {"type": "string", "format": "date-time"}}, {"name": "to", "in": "query", "schema": {"type": "string", "format": "date-time"}}, {"name": "sort", "in": "query", "schema": {"type": "string", "enum": ["payment_at", "-payment_at", "amount", "-amount"]}})), "responses": ok},
         "post": {"summary": "Record vendor payment", "parameters": [event_id, vendor_id], "requestBody": json_body(payment_schema), "responses": created},
     }
     paths["/api/events/{event_id}/notifications"] = {"get": {"summary": "List notifications", "parameters": [event_id] + pagination_parameters(), "responses": ok}}
-    paths["/api/events/{event_id}/notifications/{id}"] = {"patch": {"summary": "Set notification read state", "parameters": [event_id, resource_id], "requestBody": json_body({"type": "object", "properties": {"read": {"type": "boolean"}, "is_read": {"type": "boolean", "deprecated": True}}}), "responses": ok}}
+    paths["/api/events/{event_id}/notifications/{id}"] = {"patch": {"summary": "Set notification read state", "parameters": [event_id, resource_id], "requestBody": json_body({"type": "object", "required": ["read"], "properties": {"read": {"type": "boolean"}}}), "responses": ok}}
     paths["/api/events/{event_id}/activity"] = {"get": {"summary": "List event activity", "parameters": [event_id] + pagination_parameters(), "responses": ok}}
     for item in paths.values():
         for operation in item.values():
@@ -207,12 +220,97 @@ def create_app(db=None):
 
     def page(cursor, sql, binds):
         try:
-            number = max(1, int(request.query.get("page", "1")))
-            size = min(100, max(1, int(request.query.get("page_size", "20"))))
-        except ValueError:
+            number = int(request.query.get("page", "1"))
+            size = int(request.query.get("page_size", "20"))
+        except (TypeError, ValueError):
             fail(422, "VALIDATION_ERROR", "page and page_size must be integers")
+        if number < 1 or size < 1 or size > 100:
+            fail(422, "VALIDATION_ERROR", "page must be at least 1 and page_size must be between 1 and 100")
         values = rows(execute(cursor, sql, binds))
         return {"items": values[(number - 1) * size:number * size], "total": len(values), "page": number, "page_size": size}
+
+    def finance_collection_query(kind):
+        """Validate finance collection filters and return SQL fragments safely.
+
+        Sort expressions are selected only from this whitelist; every value supplied
+        by a client is otherwise passed as a named Oracle bind.
+        """
+        definitions = {
+            "category": {
+                "allowed": {"page", "page_size", "search", "sort", "order", "from", "to", "min_planned_amount", "max_planned_amount"},
+                "sort": {"id": "id", "name": "name", "planned_amount": "planned_amount", "created_at": "created_at"},
+                "date_column": "created_at",
+                "amount_column": "planned_amount",
+                "amount_prefix": "planned_amount",
+            },
+            "expense": {
+                "allowed": {"page", "page_size", "category_id", "search", "sort", "order", "from", "to", "min_amount", "max_amount"},
+                "sort": {"id": "id", "description": "description", "amount": "amount", "expenditure_at": "expenditure_at", "created_at": "created_at"},
+                "date_column": "expenditure_at",
+                "amount_column": "amount",
+                "amount_prefix": "amount",
+            },
+        }[kind]
+        unknown = set(request.query.keys()) - definitions["allowed"]
+        if unknown:
+            fail(422, "VALIDATION_ERROR", "Unsupported query parameter", {"parameters": sorted(unknown)})
+        where, binds = [], {}
+        search = request.query.get("search")
+        if search is not None:
+            if not isinstance(search, str) or not search.strip() or len(search.strip()) > 200:
+                fail(422, "VALIDATION_ERROR", "search must contain between 1 and 200 characters")
+            where.append("LOWER(" + ("name" if kind == "category" else "description") + ") LIKE :search")
+            binds["search"] = "%" + search.strip().lower() + "%"
+        if kind == "expense" and request.query.get("category_id") is not None:
+            raw_category = request.query.get("category_id")
+            try:
+                category_id = int(raw_category)
+            except (TypeError, ValueError):
+                fail(422, "VALIDATION_ERROR", "category_id must be a positive integer")
+            if category_id < 1 or str(category_id) != raw_category:
+                fail(422, "VALIDATION_ERROR", "category_id must be a positive integer")
+            where.append("category_id=:filter_category_id")
+            binds["filter_category_id"] = category_id
+        start = date_value(request.query.get("from"), "from") if request.query.get("from") is not None else None
+        end = date_value(request.query.get("to"), "to") if request.query.get("to") is not None else None
+        if start and end and start > end:
+            fail(422, "VALIDATION_ERROR", "from must not be after to")
+        if start:
+            where.append(definitions["date_column"] + ">=:from_time")
+            binds["from_time"] = start
+        if end:
+            where.append(definitions["date_column"] + "<=:to_time")
+            binds["to_time"] = end
+        minimum = request.query.get("min_" + definitions["amount_prefix"])
+        maximum = request.query.get("max_" + definitions["amount_prefix"])
+        min_value = decimal_value(minimum, "min_" + definitions["amount_prefix"]) if minimum is not None else None
+        max_value = decimal_value(maximum, "max_" + definitions["amount_prefix"]) if maximum is not None else None
+        if min_value is not None and max_value is not None and min_value > max_value:
+            fail(422, "VALIDATION_ERROR", "minimum amount must not exceed maximum amount")
+        if min_value is not None:
+            where.append(definitions["amount_column"] + ">=:min_amount")
+            binds["min_amount"] = min_value
+        if max_value is not None:
+            where.append(definitions["amount_column"] + "<=:max_amount")
+            binds["max_amount"] = max_value
+        sort = request.query.get("sort", "id")
+        if sort not in definitions["sort"]:
+            fail(422, "VALIDATION_ERROR", "Invalid sort field")
+        order = request.query.get("order", "asc").lower()
+        if order not in {"asc", "desc"}:
+            fail(422, "VALIDATION_ERROR", "order must be asc or desc")
+        return where, binds, definitions["sort"][sort] + " " + order.upper() + ", id " + order.upper()
+
+    def enforce_budget(cursor, event_id, user_id, proposed_total):
+        """Lock the event and reject an expense write that would exceed its budget."""
+        owner = event(cursor, event_id, user_id, lock=True)
+        if proposed_total > Decimal(str(owner["budget_limit"])):
+            fail(409, "BUDGET_LIMIT_EXCEEDED", "Expense would exceed the event budget limit")
+        return owner
+
+    def proposed_expense_total(cursor, event_id, old_amount, new_amount):
+        actual = one(execute(cursor, "SELECT NVL(SUM(amount),0) actual FROM eventforge_expenses WHERE event_id=:event_id", {"event_id": event_id}))["actual"]
+        return Decimal(str(actual)) - Decimal(str(old_amount)) + Decimal(str(new_amount))
 
     def category_totals(cursor, category):
         actual = one(execute(cursor, "SELECT NVL(SUM(amount),0) actual FROM eventforge_expenses WHERE category_id=:id", {"id": category["id"]}))["actual"]
@@ -366,9 +464,31 @@ def create_app(db=None):
             activity(cursor, event_id, user_id, "EVENT_UPDATED")
             return event(cursor, event_id, user_id)
 
+    def validate_collection_query(allowed):
+        unknown = set(request.query.keys()) - set(allowed)
+        if unknown:
+            fail(422, "VALIDATION_ERROR", "Unsupported query parameter: " + sorted(unknown)[0])
+
+    def collection_page(cursor, sql, binds, allowed_sorts, default_sort):
+        """Strict, resource-local collection query parsing (never clamps bad input)."""
+        try:
+            number = int(request.query.get("page", "1"))
+            size = int(request.query.get("page_size", "20"))
+        except ValueError:
+            fail(422, "VALIDATION_ERROR", "page and page_size must be integers")
+        if number < 1 or not 1 <= size <= 100:
+            fail(422, "VALIDATION_ERROR", "page must be positive and page_size must be between 1 and 100")
+        sort = request.query.get("sort", default_sort)
+        direction = request.query.get("order", "asc").lower()
+        if sort not in allowed_sorts or direction not in {"asc", "desc"}:
+            fail(422, "VALIDATION_ERROR", "Invalid sort or order")
+        values = rows(execute(cursor, sql + " ORDER BY " + allowed_sorts[sort] + " " + direction.upper() + ", id", binds))
+        start = (number - 1) * size
+        return {"items": values[start:start + size], "total": len(values), "page": number, "page_size": size}
+
     def validate_dependencies(cursor, event_id, task_id, dependency_ids):
-        if not isinstance(dependency_ids, list) or any(type(value) is not int for value in dependency_ids):
-            fail(422, "VALIDATION_ERROR", "dependency_ids must be an array of integers")
+        if not isinstance(dependency_ids, list) or any(type(value) is not int for value in dependency_ids) or len(set(dependency_ids)) != len(dependency_ids):
+            fail(422, "VALIDATION_ERROR", "dependency_ids must be a unique array of integers")
         if task_id in dependency_ids:
             fail(409, "TASK_DEPENDENCY_CONFLICT", "A task cannot depend on itself")
         for dependency_id in dependency_ids:
@@ -383,8 +503,14 @@ def create_app(db=None):
                     seen.add(current)
                     todo.extend(row["dependency_id"] for row in rows(execute(cursor, "SELECT dependency_id FROM eventforge_task_dependencies WHERE task_id=:id", {"id": current})))
 
-    # Task, invitation, category, expense, schedule, vendor, payment, and notification
-    # routes are registered below by compact explicit handlers.
+    def task_deadline_notifications(cursor, event_id, task):
+        deadline = task.get("deadline")
+        if deadline:
+            notification(cursor, event_id, "deadline", "Task '%s' has a deadline" % task["title"])
+            due = deadline if isinstance(deadline, datetime) else date_value(str(deadline), "deadline")
+            if due < datetime.now(timezone.utc) and task["status"] != "COMPLETED":
+                notification(cursor, event_id, "overdue-task", "Task '%s' is overdue" % task["title"])
+
     @app.route("/api/events/<event_id:int>/tasks", method=["GET", "POST"])
     @guarded
     def tasks(event_id):
@@ -392,21 +518,34 @@ def create_app(db=None):
         with db.transaction() as connection:
             cursor = connection.cursor(); event(cursor, event_id, user_id)
             if request.method == "GET":
-                binds = {"event_id": event_id}
-                sql = "SELECT * FROM eventforge_tasks WHERE event_id=:event_id"
-                if request.query.get("status"):
-                    status = request.query.status
-                    if status not in TASK_STATUSES:
-                        fail(422, "VALIDATION_ERROR", "Invalid task status")
-                    sql += " AND status=:status"
-                    binds["status"] = status
-                return page(cursor, sql + " ORDER BY id", binds)
-            data = parse_body(); status = data.get("status", "TODO")
-            if status not in TASK_STATUSES: fail(422, "VALIDATION_ERROR", "Invalid task status")
-            task_id = insert(cursor, "INSERT INTO eventforge_tasks (event_id,title,description,status,deadline) VALUES (:event_id,:title,:description,:status,:deadline)", {"event_id": event_id, "title": required_text(data, "title"), "description": data.get("description"), "status": status, "deadline": date_value(data["deadline"], "deadline") if data.get("deadline") else None})
+                validate_collection_query({"page", "page_size", "status", "priority", "assignee", "search", "sort", "order"})
+                binds, clauses = {"event_id": event_id}, ["event_id=:event_id"]
+                status = request.query.get("status")
+                priority = request.query.get("priority")
+                assignee = request.query.get("assignee")
+                search = request.query.get("search")
+                if status is not None:
+                    if status not in TASK_STATUSES: fail(422, "VALIDATION_ERROR", "Invalid task status")
+                    clauses.append("status=:status"); binds["status"] = status
+                if priority is not None:
+                    if priority not in TASK_PRIORITIES: fail(422, "VALIDATION_ERROR", "Invalid task priority")
+                    clauses.append("priority=:priority"); binds["priority"] = priority
+                if assignee is not None:
+                    clauses.append("assignee=:assignee"); binds["assignee"] = assignee
+                if search is not None:
+                    if not search.strip(): fail(422, "VALIDATION_ERROR", "search must not be blank")
+                    clauses.append("(LOWER(title) LIKE :search OR LOWER(description) LIKE :search)"); binds["search"] = "%" + search.lower() + "%"
+                return collection_page(cursor, "SELECT * FROM eventforge_tasks WHERE " + " AND ".join(clauses), binds, {"id": "id", "title": "title", "status": "status", "priority": "priority", "deadline": "deadline", "created_at": "created_at"}, "id")
+            data = parse_body(); status = data.get("status", "TODO"); priority = data.get("priority")
+            if status != "TODO": fail(422, "VALIDATION_ERROR", "New tasks must start in TODO")
+            if priority not in TASK_PRIORITIES: fail(422, "VALIDATION_ERROR", "priority must be LOW, MEDIUM, HIGH, or URGENT")
+            assignee = data.get("assignee")
+            if assignee is not None and (not isinstance(assignee, str) or not assignee.strip()): fail(422, "VALIDATION_ERROR", "assignee must be a nonblank string or null")
+            task_id = insert(cursor, "INSERT INTO eventforge_tasks (event_id,title,description,status,priority,assignee,deadline) VALUES (:event_id,:title,:description,:status,:priority,:assignee,:deadline)", {"event_id": event_id, "title": required_text(data, "title"), "description": data.get("description"), "status": status, "priority": priority, "assignee": assignee.strip() if assignee else None, "deadline": date_value(data["deadline"], "deadline") if data.get("deadline") else None})
             validate_dependencies(cursor, event_id, task_id, data.get("dependency_ids", []))
             for dependency_id in data.get("dependency_ids", []): execute(cursor, "INSERT INTO eventforge_task_dependencies (task_id,dependency_id) VALUES (:task,:dependency)", {"task": task_id, "dependency": dependency_id})
-            response.status = 201; return child(cursor, "eventforge_tasks", event_id, task_id)
+            value = child(cursor, "eventforge_tasks", event_id, task_id); activity(cursor, event_id, user_id, "TASK_CREATED"); task_deadline_notifications(cursor, event_id, value)
+            response.status = 201; return value
 
     @app.route("/api/events/<event_id:int>/tasks/<task_id:int>", method=["GET", "PUT", "DELETE"])
     @guarded
@@ -417,18 +556,74 @@ def create_app(db=None):
             if request.method == "GET": return old
             if request.method == "DELETE":
                 if one(execute(cursor, "SELECT 1 FROM eventforge_task_dependencies WHERE dependency_id=:id FETCH FIRST 1 ROWS ONLY", {"id": task_id})): fail(409, "TASK_DEPENDENCY_CONFLICT", "Other tasks depend on this task")
-                execute(cursor, "DELETE FROM eventforge_task_dependencies WHERE task_id=:id", {"id": task_id}); execute(cursor, "DELETE FROM eventforge_tasks WHERE id=:id", {"id": task_id}); response.status = 204; return ""
+                execute(cursor, "DELETE FROM eventforge_task_dependencies WHERE task_id=:id", {"id": task_id}); execute(cursor, "DELETE FROM eventforge_tasks WHERE id=:id", {"id": task_id}); activity(cursor, event_id, user_id, "TASK_DELETED"); response.status = 204; return ""
             data = parse_body(); status = data.get("status", old["status"])
             if status not in TASK_STATUSES: fail(422, "VALIDATION_ERROR", "Invalid task status")
             if old["status"] == "COMPLETED" and status != "COMPLETED": fail(409, "TASK_COMPLETED_IMMUTABLE", "Completed tasks cannot be reopened")
+            if status != old["status"] and status not in TASK_TRANSITIONS[old["status"]]: fail(409, "INVALID_TASK_TRANSITION", "Invalid task lifecycle transition")
             if status == "COMPLETED" and one(execute(cursor, "SELECT 1 FROM eventforge_task_dependencies d JOIN eventforge_tasks t ON t.id=d.dependency_id WHERE d.task_id=:id AND t.status<>'COMPLETED' FETCH FIRST 1 ROWS ONLY", {"id": task_id})): fail(409, "INCOMPLETE_DEPENDENCIES", "All prerequisites must be completed")
+            priority = data.get("priority", old["priority"])
+            if priority not in TASK_PRIORITIES: fail(422, "VALIDATION_ERROR", "Invalid task priority")
+            assignee = data.get("assignee", old["assignee"])
+            if assignee is not None and (not isinstance(assignee, str) or not assignee.strip()): fail(422, "VALIDATION_ERROR", "assignee must be a nonblank string or null")
             if "dependency_ids" in data:
                 validate_dependencies(cursor, event_id, task_id, data["dependency_ids"]); execute(cursor, "DELETE FROM eventforge_task_dependencies WHERE task_id=:id", {"id": task_id})
                 for dependency_id in data["dependency_ids"]: execute(cursor, "INSERT INTO eventforge_task_dependencies (task_id,dependency_id) VALUES (:task,:dependency)", {"task": task_id, "dependency": dependency_id})
-            execute(cursor, "UPDATE eventforge_tasks SET title=:title,description=:description,status=:status,deadline=:deadline WHERE id=:id", {"title": data.get("title", old["title"]), "description": data.get("description", old["description"]), "status": status, "deadline": date_value(data["deadline"], "deadline") if "deadline" in data and data["deadline"] else old["deadline"], "id": task_id})
-            return child(cursor, "eventforge_tasks", event_id, task_id)
+            execute(cursor, "UPDATE eventforge_tasks SET title=:title,description=:description,status=:status,priority=:priority,assignee=:assignee,deadline=:deadline WHERE id=:id", {"title": required_text(data, "title") if "title" in data else old["title"], "description": data.get("description", old["description"]), "status": status, "priority": priority, "assignee": assignee.strip() if assignee else None, "deadline": date_value(data["deadline"], "deadline") if "deadline" in data and data["deadline"] else (None if data.get("deadline") is None and "deadline" in data else old["deadline"]), "id": task_id})
+            value = child(cursor, "eventforge_tasks", event_id, task_id); activity(cursor, event_id, user_id, "TASK_UPDATED"); task_deadline_notifications(cursor, event_id, value)
+            return value
 
-    # Finance routes deliberately retain each mutation and warning in one transaction.
+    @app.route("/api/events/<event_id:int>/invitations", method=["GET", "POST"])
+    @guarded
+    def invitations(event_id):
+        user_id = authenticate()
+        with db.transaction() as connection:
+            cursor = connection.cursor(); event(cursor, event_id, user_id)
+            if request.method == "GET":
+                validate_collection_query({"page", "page_size", "status", "search", "sort", "order"})
+                binds, clauses = {"event_id": event_id}, ["event_id=:event_id"]
+                status, search = request.query.get("status"), request.query.get("search")
+                if status is not None:
+                    if status not in RSVP_STATUSES: fail(422, "VALIDATION_ERROR", "Invalid RSVP status")
+                    clauses.append("status=:status"); binds["status"] = status
+                if search is not None:
+                    if not search.strip(): fail(422, "VALIDATION_ERROR", "search must not be blank")
+                    clauses.append("(LOWER(guest_name) LIKE :search OR LOWER(guest_email) LIKE :search)"); binds["search"] = "%" + search.lower() + "%"
+                return collection_page(cursor, "SELECT * FROM eventforge_invitations WHERE " + " AND ".join(clauses), binds, {"id": "id", "guest_name": "guest_name", "guest_email": "guest_email", "status": "status", "created_at": "created_at"}, "id")
+            data = parse_body(); status = data.get("status", "PENDING")
+            if status not in RSVP_STATUSES: fail(422, "VALIDATION_ERROR", "Invalid RSVP status")
+            if not EMAIL.match(required_text(data, "guest_email").lower()): fail(422, "VALIDATION_ERROR", "guest_email must be valid")
+            locked_event = event(cursor, event_id, user_id, lock=True)
+            if status == "ACCEPTED" and locked_event["capacity"] is not None and locked_event["confirmed_guest_count"] >= locked_event["capacity"]: fail(409, "EVENT_CAPACITY_REACHED", "Event capacity has been reached")
+            invitation_id = insert(cursor, "INSERT INTO eventforge_invitations (event_id,guest_name,guest_email,status) VALUES (:event_id,:name,:email,:status)", {"event_id": event_id, "name": required_text(data, "guest_name"), "email": required_text(data, "guest_email").lower(), "status": status})
+            if status == "ACCEPTED": execute(cursor, "UPDATE eventforge_events SET confirmed_guest_count=confirmed_guest_count+1 WHERE id=:id", {"id": event_id})
+            activity(cursor, event_id, user_id, "INVITATION_CREATED"); notification(cursor, event_id, "invitation", "Invitation RSVP recorded for " + required_text(data, "guest_name"))
+            response.status = 201; return child(cursor, "eventforge_invitations", event_id, invitation_id)
+
+    @app.route("/api/events/<event_id:int>/invitations/<invitation_id:int>", method=["GET", "PUT", "DELETE"])
+    @guarded
+    def invitation(event_id, invitation_id):
+        user_id = authenticate()
+        with db.transaction() as connection:
+            cursor = connection.cursor(); old = child(cursor, "eventforge_invitations", event_id, invitation_id)
+            if request.method == "GET": event(cursor, event_id, user_id); return old
+            locked_event = event(cursor, event_id, user_id, lock=True)
+            if request.method == "DELETE":
+                if old["status"] == "ACCEPTED": execute(cursor, "UPDATE eventforge_events SET confirmed_guest_count=confirmed_guest_count-1 WHERE id=:id AND confirmed_guest_count>0", {"id": event_id})
+                execute(cursor, "DELETE FROM eventforge_invitations WHERE id=:id AND event_id=:event_id", {"id": invitation_id, "event_id": event_id}); activity(cursor, event_id, user_id, "INVITATION_DELETED"); notification(cursor, event_id, "invitation", "Invitation deleted for " + old["guest_name"]); response.status = 204; return ""
+            data = parse_body(); status = data.get("status", old["status"])
+            if status not in RSVP_STATUSES: fail(422, "VALIDATION_ERROR", "Invalid RSVP status")
+            if status != old["status"] and status not in RSVP_TRANSITIONS[old["status"]]: fail(409, "INVALID_RSVP_TRANSITION", "Invalid RSVP status transition")
+            if status == "ACCEPTED" and old["status"] != "ACCEPTED" and locked_event["capacity"] is not None and locked_event["confirmed_guest_count"] >= locked_event["capacity"]: fail(409, "EVENT_CAPACITY_REACHED", "Event capacity has been reached")
+            email = data.get("guest_email", old["guest_email"])
+            if not isinstance(email, str) or not EMAIL.match(email.lower()): fail(422, "VALIDATION_ERROR", "guest_email must be valid")
+            if old["status"] != "ACCEPTED" and status == "ACCEPTED": execute(cursor, "UPDATE eventforge_events SET confirmed_guest_count=confirmed_guest_count+1 WHERE id=:id", {"id": event_id})
+            if old["status"] == "ACCEPTED" and status != "ACCEPTED": execute(cursor, "UPDATE eventforge_events SET confirmed_guest_count=confirmed_guest_count-1 WHERE id=:id AND confirmed_guest_count>0", {"id": event_id})
+            execute(cursor, "UPDATE eventforge_invitations SET guest_name=:name,guest_email=:email,status=:status WHERE id=:id", {"name": required_text(data, "guest_name") if "guest_name" in data else old["guest_name"], "email": email.lower(), "status": status, "id": invitation_id})
+            activity(cursor, event_id, user_id, "INVITATION_UPDATED"); notification(cursor, event_id, "invitation", "Invitation RSVP updated for " + (data.get("guest_name") or old["guest_name"]))
+            return child(cursor, "eventforge_invitations", event_id, invitation_id)
+
+    # Finance mutations include their audit row in the same database transaction.
     @app.route("/api/events/<event_id:int>/budget-categories", method=["GET", "POST"])
     @guarded
     def categories(event_id):
@@ -436,8 +631,19 @@ def create_app(db=None):
         with db.transaction() as connection:
             cursor = connection.cursor(); event(cursor, event_id, user_id)
             if request.method == "GET":
-                result = page(cursor, "SELECT * FROM eventforge_categories WHERE event_id=:event_id ORDER BY id", {"event_id": event_id}); result["items"] = [category_totals(cursor, item) for item in result["items"]]; return result
-            data = parse_body(); category_id = insert(cursor, "INSERT INTO eventforge_categories (event_id,name,planned_amount) VALUES (:event_id,:name,:planned)", {"event_id": event_id, "name": required_text(data, "name"), "planned": decimal_value(data.get("planned_amount", 0), "planned_amount")}); response.status = 201; return category_totals(cursor, child(cursor, "eventforge_categories", event_id, category_id))
+                clauses, binds, order = finance_collection_query("category")
+                binds["event_id"] = event_id
+                sql = "SELECT * FROM eventforge_categories WHERE event_id=:event_id"
+                if clauses:
+                    sql += " AND " + " AND ".join(clauses)
+                result = page(cursor, sql + " ORDER BY " + order, binds)
+                result["items"] = [category_totals(cursor, item) for item in result["items"]]
+                return result
+            data = parse_body()
+            category_id = insert(cursor, "INSERT INTO eventforge_categories (event_id,name,planned_amount) VALUES (:event_id,:name,:planned)", {"event_id": event_id, "name": required_text(data, "name"), "planned": decimal_value(data.get("planned_amount", 0), "planned_amount")})
+            activity(cursor, event_id, user_id, "CATEGORY_CREATED")
+            response.status = 201
+            return category_totals(cursor, child(cursor, "eventforge_categories", event_id, category_id))
 
     @app.route("/api/events/<event_id:int>/budget-categories/<category_id:int>", method=["GET", "PUT", "DELETE"])
     @guarded
@@ -447,38 +653,66 @@ def create_app(db=None):
             cursor = connection.cursor(); event(cursor, event_id, user_id); old = child(cursor, "eventforge_categories", event_id, category_id)
             if request.method == "GET": return category_totals(cursor, old)
             if request.method == "DELETE":
-                if one(execute(cursor, "SELECT 1 FROM eventforge_expenses WHERE category_id=:id FETCH FIRST 1 ROWS ONLY", {"id": category_id})): fail(409, "CATEGORY_HAS_EXPENSES", "Category has expenses")
-                execute(cursor, "DELETE FROM eventforge_categories WHERE id=:id", {"id": category_id}); response.status = 204; return ""
+                if one(execute(cursor, "SELECT 1 FROM eventforge_expenses WHERE category_id=:id FETCH FIRST 1 ROWS ONLY", {"id": category_id})):
+                    fail(409, "CATEGORY_HAS_EXPENSES", "Category has expenses")
+                execute(cursor, "DELETE FROM eventforge_categories WHERE id=:id", {"id": category_id})
+                activity(cursor, event_id, user_id, "CATEGORY_DELETED")
+                response.status = 204
+                return ""
             data = parse_body(); planned = decimal_value(data.get("planned_amount", old["planned_amount"]), "planned_amount")
             actual = Decimal(category_totals(cursor, old)["actual"])
             if planned < actual: fail(409, "CATEGORY_LIMIT_BELOW_SPEND", "planned_amount cannot be below actual spending")
-            execute(cursor, "UPDATE eventforge_categories SET name=:name,planned_amount=:planned WHERE id=:id", {"name": data.get("name", old["name"]), "planned": planned, "id": category_id}); return category_totals(cursor, child(cursor, "eventforge_categories", event_id, category_id))
+            name = required_text(data, "name") if "name" in data else old["name"]
+            execute(cursor, "UPDATE eventforge_categories SET name=:name,planned_amount=:planned WHERE id=:id", {"name": name, "planned": planned, "id": category_id})
+            activity(cursor, event_id, user_id, "CATEGORY_UPDATED")
+            return category_totals(cursor, child(cursor, "eventforge_categories", event_id, category_id))
 
     @app.route("/api/events/<event_id:int>/expenses", method=["GET", "POST"])
     @guarded
     def expenses(event_id):
         user_id = authenticate()
         with db.transaction() as connection:
-            cursor = connection.cursor(); event(cursor, event_id, user_id)
-            if request.method == "GET": return page(cursor, "SELECT * FROM eventforge_expenses WHERE event_id=:event_id ORDER BY id", {"event_id": event_id})
+            cursor = connection.cursor(); event(cursor, event_id, user_id, lock=request.method == "POST")
+            if request.method == "GET":
+                clauses, binds, order = finance_collection_query("expense")
+                binds["event_id"] = event_id
+                sql = "SELECT * FROM eventforge_expenses WHERE event_id=:event_id"
+                if clauses:
+                    sql += " AND " + " AND ".join(clauses)
+                return page(cursor, sql + " ORDER BY " + order, binds)
             data = parse_body(); category_id = data.get("category_id")
-            if type(category_id) is not int: fail(422, "VALIDATION_ERROR", "category_id is required")
-            child(cursor, "eventforge_categories", event_id, category_id); expense_id = insert(cursor, "INSERT INTO eventforge_expenses (event_id,category_id,description,amount,expenditure_at) VALUES (:event_id,:category,:description,:amount,:at)", {"event_id": event_id, "category": category_id, "description": required_text(data, "description"), "amount": decimal_value(data.get("amount"), "amount", True), "at": date_value(data["expenditure_at"], "expenditure_at") if data.get("expenditure_at") else datetime.now(timezone.utc)}); response.status = 201; return child(cursor, "eventforge_expenses", event_id, expense_id)
+            if type(category_id) is not int or category_id < 1: fail(422, "VALIDATION_ERROR", "category_id is required")
+            amount = decimal_value(data.get("amount"), "amount", True)
+            # The event row is locked before calculating and writing the new total.
+            enforce_budget(cursor, event_id, user_id, proposed_expense_total(cursor, event_id, 0, amount))
+            child(cursor, "eventforge_categories", event_id, category_id)
+            expense_id = insert(cursor, "INSERT INTO eventforge_expenses (event_id,category_id,description,amount,expenditure_at) VALUES (:event_id,:category,:description,:amount,:at)", {"event_id": event_id, "category": category_id, "description": required_text(data, "description"), "amount": amount, "at": date_value(data["expenditure_at"], "expenditure_at") if data.get("expenditure_at") else datetime.now(timezone.utc)})
+            activity(cursor, event_id, user_id, "EXPENSE_CREATED")
+            response.status = 201
+            return child(cursor, "eventforge_expenses", event_id, expense_id)
 
     @app.route("/api/events/<event_id:int>/expenses/<expense_id:int>", method=["GET", "PUT", "DELETE"])
     @guarded
     def expense(event_id, expense_id):
         user_id = authenticate()
         with db.transaction() as connection:
-            cursor = connection.cursor(); event(cursor, event_id, user_id); old = child(cursor, "eventforge_expenses", event_id, expense_id)
+            cursor = connection.cursor(); event(cursor, event_id, user_id, lock=request.method == "PUT"); old = child(cursor, "eventforge_expenses", event_id, expense_id)
             if request.method == "GET": return old
-            if request.method == "DELETE": execute(cursor, "DELETE FROM eventforge_expenses WHERE id=:id", {"id": expense_id}); response.status = 204; return ""
-            data = parse_body(); category_id = data.get("category_id", old["category_id"]); child(cursor, "eventforge_categories", event_id, category_id)
-            execute(cursor, "UPDATE eventforge_expenses SET category_id=:category,description=:description,amount=:amount,expenditure_at=:at WHERE id=:id", {"category": category_id, "description": data.get("description", old["description"]), "amount": decimal_value(data.get("amount", old["amount"]), "amount", True), "at": date_value(data["expenditure_at"], "expenditure_at") if "expenditure_at" in data else old["expenditure_at"], "id": expense_id})
-            total = one(execute(cursor, "SELECT NVL(SUM(amount),0) actual FROM eventforge_expenses WHERE event_id=:event_id", {"event_id": event_id}))["actual"]
-            owner = event(cursor, event_id, user_id)
-            if Decimal(str(total)) > Decimal(str(owner["budget_limit"])):
-                notification(cursor, event_id, "budget-warning", "Event actual spending exceeds budget limit")
+            if request.method == "DELETE":
+                execute(cursor, "DELETE FROM eventforge_expenses WHERE id=:id", {"id": expense_id})
+                activity(cursor, event_id, user_id, "EXPENSE_DELETED")
+                response.status = 204
+                return ""
+            data = parse_body(); category_id = data.get("category_id", old["category_id"])
+            if type(category_id) is not int or category_id < 1: fail(422, "VALIDATION_ERROR", "category_id must be a positive integer")
+            amount = decimal_value(data.get("amount", old["amount"]), "amount", True)
+            # This locks before the total is calculated, so concurrent writes serialize.
+            enforce_budget(cursor, event_id, user_id, proposed_expense_total(cursor, event_id, old["amount"], amount))
+            child(cursor, "eventforge_categories", event_id, category_id)
+            description = required_text(data, "description") if "description" in data else old["description"]
+            expenditure_at = date_value(data["expenditure_at"], "expenditure_at") if "expenditure_at" in data else old["expenditure_at"]
+            execute(cursor, "UPDATE eventforge_expenses SET category_id=:category,description=:description,amount=:amount,expenditure_at=:at WHERE id=:id", {"category": category_id, "description": description, "amount": amount, "at": expenditure_at, "id": expense_id})
+            activity(cursor, event_id, user_id, "EXPENSE_UPDATED")
             return child(cursor, "eventforge_expenses", event_id, expense_id)
 
     # The remaining resource routes are intentionally available through a small shared CRUD implementation.
@@ -522,8 +756,64 @@ def create_app(db=None):
                 execute(cursor, f"UPDATE {table} SET {','.join(sets)} WHERE id=:id", binds); value = child(cursor, table, event_id, item_id); return vendor_view(value) if table == "eventforge_vendors" else value
         return collection, item
 
-    simple_resource("invitations", "eventforge_invitations", ("guest_name", "guest_email", "status"))
-    simple_resource("vendors", "eventforge_vendors", ("name", "service_type", "contact_name", "contact_email", "booking_reference"), "cost")
+    # The public vendor projection deliberately hides retired contact_name,
+    # contact_email, and booking_reference persistence columns.
+    def vendor_public(value):
+        return {key: value[key] for key in ("id", "event_id", "name", "service_type", "contact_details", "booking_status", "cost", "paid_amount", "created_at") if key in value} | {"outstanding_amount": format(Decimal(str(value["cost"])) - Decimal(str(value["paid_amount"])), ".2f")}
+
+    @app.route("/api/events/<event_id:int>/vendors", method=["GET", "POST"])
+    @guarded
+    def vendors(event_id):
+        user_id = authenticate()
+        with db.transaction() as connection:
+            cursor = connection.cursor(); event(cursor, event_id, user_id)
+            if request.method == "GET":
+                binds = {"event_id": event_id}
+                sql = "SELECT * FROM eventforge_vendors WHERE event_id=:event_id"
+                for field in ("service_type", "booking_status"):
+                    if request.query.get(field):
+                        binds[field] = required_text({field: request.query.get(field)}, field)
+                        sql += f" AND {field}=:{field}"
+                if request.query.get("search"):
+                    binds["search"] = "%" + required_text({"search": request.query.search}, "search").lower() + "%"
+                    sql += " AND (LOWER(name) LIKE :search OR LOWER(service_type) LIKE :search)"
+                order = request.query.get("sort", "name")
+                order_by = {"name": "name ASC", "-name": "name DESC", "cost": "cost ASC", "-cost": "cost DESC", "service_type": "service_type ASC", "-service_type": "service_type DESC"}
+                if order not in order_by: fail(422, "VALIDATION_ERROR", "Invalid vendor sort")
+                result = page(cursor, sql + " ORDER BY " + order_by[order] + ", id", binds)
+                result["items"] = [vendor_public(item) for item in result["items"]]
+                return result
+            data = parse_body()
+            values = {"event_id": event_id, "name": required_text(data, "name"), "service_type": required_text(data, "service_type"), "contact_details": data.get("contact_details"), "booking_status": required_text(data, "booking_status"), "cost": decimal_value(data.get("cost"), "cost")}
+            if values["contact_details"] is not None and not isinstance(values["contact_details"], str): fail(422, "VALIDATION_ERROR", "contact_details must be a string or null")
+            vendor_id = insert(cursor, "INSERT INTO eventforge_vendors (event_id,name,service_type,contact_details,booking_status,cost) VALUES (:event_id,:name,:service_type,:contact_details,:booking_status,:cost)", values)
+            activity(cursor, event_id, user_id, "VENDOR_CREATED")
+            response.status = 201; return vendor_public(child(cursor, "eventforge_vendors", event_id, vendor_id))
+
+    @app.route("/api/events/<event_id:int>/vendors/<vendor_id:int>", method=["GET", "PUT", "DELETE"])
+    @guarded
+    def vendor(event_id, vendor_id):
+        user_id = authenticate()
+        with db.transaction() as connection:
+            cursor = connection.cursor(); event(cursor, event_id, user_id); old = child(cursor, "eventforge_vendors", event_id, vendor_id)
+            if request.method == "GET": return vendor_public(old)
+            if request.method == "DELETE":
+                if one(execute(cursor, "SELECT 1 FROM eventforge_payments WHERE vendor_id=:id FETCH FIRST 1 ROWS ONLY", {"id": vendor_id})): fail(409, "VENDOR_HAS_PAYMENTS", "Vendor has payments")
+                execute(cursor, "DELETE FROM eventforge_vendors WHERE id=:id", {"id": vendor_id}); activity(cursor, event_id, user_id, "VENDOR_DELETED"); response.status = 204; return ""
+            data = parse_body(); allowed = ("name", "service_type", "contact_details", "booking_status")
+            sets, binds = [], {"id": vendor_id}
+            for field in allowed:
+                if field in data:
+                    if field == "contact_details":
+                        if data[field] is not None and not isinstance(data[field], str): fail(422, "VALIDATION_ERROR", "contact_details must be a string or null")
+                        binds[field] = data[field]
+                    else: binds[field] = required_text(data, field)
+                    sets.append(f"{field}=:{field}")
+            if "cost" in data: binds["cost"] = decimal_value(data["cost"], "cost"); sets.append("cost=:cost")
+            if not sets: fail(422, "VALIDATION_ERROR", "No mutable fields supplied")
+            execute(cursor, "UPDATE eventforge_vendors SET " + ",".join(sets) + " WHERE id=:id", binds)
+            activity(cursor, event_id, user_id, "VENDOR_UPDATED")
+            return vendor_public(child(cursor, "eventforge_vendors", event_id, vendor_id))
 
     @app.route("/api/events/<event_id:int>/schedule", method=["GET", "POST"])
     @guarded
@@ -545,7 +835,13 @@ def create_app(db=None):
                 if end:
                     sql += " AND start_time<=:to_time"
                     binds["to_time"] = end
-                return page(cursor, sql + " ORDER BY start_time", binds)
+                if request.query.get("search"):
+                    binds["search"] = "%" + required_text({"search": request.query.search}, "search").lower() + "%"
+                    sql += " AND (LOWER(title) LIKE :search OR LOWER(description) LIKE :search)"
+                order = request.query.get("sort", "start_time")
+                order_by = {"start_time": "start_time ASC", "-start_time": "start_time DESC", "title": "title ASC", "-title": "title DESC"}
+                if order not in order_by: fail(422, "VALIDATION_ERROR", "Invalid schedule sort")
+                return page(cursor, sql + " ORDER BY " + order_by[order] + ", id", binds)
             data = parse_body()
             start = date_value(required_text(data, "start_time"), "start_time")
             end = date_value(required_text(data, "end_time"), "end_time")
@@ -554,7 +850,11 @@ def create_app(db=None):
             overlap = one(execute(cursor, "SELECT id FROM eventforge_schedule WHERE event_id=:event_id AND start_time < :end_time AND end_time > :start_time FETCH FIRST 1 ROWS ONLY", {"event_id": event_id, "start_time": start, "end_time": end}))
             if overlap:
                 fail(409, "SCHEDULE_OVERLAP", "Schedule intervals overlap")
-            item_id = insert(cursor, "INSERT INTO eventforge_schedule (event_id,title,start_time,end_time,details) VALUES (:event_id,:title,:start,:end,:details)", {"event_id": event_id, "title": required_text(data, "title"), "start": start, "end": end, "details": data.get("details")})
+            if "details" in data: fail(422, "VALIDATION_ERROR", "description replaces details")
+            description = data.get("description")
+            if description is not None and not isinstance(description, str): fail(422, "VALIDATION_ERROR", "description must be a string or null")
+            item_id = insert(cursor, "INSERT INTO eventforge_schedule (event_id,title,start_time,end_time,description) VALUES (:event_id,:title,:start,:end,:description)", {"event_id": event_id, "title": required_text(data, "title"), "start": start, "end": end, "description": description})
+            activity(cursor, event_id, user_id, "SCHEDULE_CREATED")
             response.status = 201
             return child(cursor, "eventforge_schedule", event_id, item_id)
 
@@ -570,9 +870,11 @@ def create_app(db=None):
                 return old
             if request.method == "DELETE":
                 execute(cursor, "DELETE FROM eventforge_schedule WHERE id=:id", {"id": item_id})
+                activity(cursor, event_id, user_id, "SCHEDULE_DELETED")
                 response.status = 204
                 return ""
             data = parse_body()
+            if "details" in data: fail(422, "VALIDATION_ERROR", "description replaces details")
             start = date_value(data.get("start_time", old["start_time"]), "start_time")
             end = date_value(data.get("end_time", old["end_time"]), "end_time")
             if start >= end:
@@ -580,7 +882,10 @@ def create_app(db=None):
             overlap = one(execute(cursor, "SELECT id FROM eventforge_schedule WHERE event_id=:event_id AND id<>:id AND start_time < :end_time AND end_time > :start_time FETCH FIRST 1 ROWS ONLY", {"event_id": event_id, "id": item_id, "start_time": start, "end_time": end}))
             if overlap:
                 fail(409, "SCHEDULE_OVERLAP", "Schedule intervals overlap")
-            execute(cursor, "UPDATE eventforge_schedule SET title=:title,start_time=:start,end_time=:end,details=:details WHERE id=:id", {"title": data.get("title", old["title"]), "start": start, "end": end, "details": data.get("details", old["details"]), "id": item_id})
+            description = data.get("description", old["description"])
+            if description is not None and not isinstance(description, str): fail(422, "VALIDATION_ERROR", "description must be a string or null")
+            execute(cursor, "UPDATE eventforge_schedule SET title=:title,start_time=:start,end_time=:end,description=:description WHERE id=:id", {"title": data.get("title", old["title"]), "start": start, "end": end, "description": description, "id": item_id})
+            activity(cursor, event_id, user_id, "SCHEDULE_UPDATED")
             return child(cursor, "eventforge_schedule", event_id, item_id)
 
     @app.route("/api/events/<event_id:int>/vendors/<vendor_id:int>/payments", method=["GET", "POST"])
@@ -589,27 +894,46 @@ def create_app(db=None):
         user_id = authenticate()
         with db.transaction() as connection:
             cursor = connection.cursor(); event(cursor, event_id, user_id); vendor = child(cursor, "eventforge_vendors", event_id, vendor_id)
-            if request.method == "GET": return page(cursor, "SELECT * FROM eventforge_payments WHERE event_id=:event_id AND vendor_id=:vendor_id ORDER BY id", {"event_id": event_id, "vendor_id": vendor_id})
+            if request.method == "GET":
+                start = date_value(request.query["from"], "from") if request.query.get("from") else None
+                end = date_value(request.query["to"], "to") if request.query.get("to") else None
+                if start and end and start > end: fail(422, "VALIDATION_ERROR", "from must not be after to")
+                binds = {"event_id": event_id, "vendor_id": vendor_id}
+                sql = "SELECT * FROM eventforge_payments WHERE event_id=:event_id AND vendor_id=:vendor_id"
+                if start: sql += " AND payment_at>=:from_time"; binds["from_time"] = start
+                if end: sql += " AND payment_at<=:to_time"; binds["to_time"] = end
+                order = request.query.get("sort", "payment_at")
+                order_by = {"payment_at": "payment_at ASC", "-payment_at": "payment_at DESC", "amount": "amount ASC", "-amount": "amount DESC"}
+                if order not in order_by: fail(422, "VALIDATION_ERROR", "Invalid payment sort")
+                return page(cursor, sql + " ORDER BY " + order_by[order] + ", id", binds)
             data = parse_body(); amount = decimal_value(data.get("amount"), "amount", True)
             if Decimal(str(vendor["paid_amount"])) + amount > Decimal(str(vendor["cost"])): fail(409, "PAYMENT_EXCEEDS_COST", "Payment exceeds vendor cost")
-            payment_id = insert(cursor, "INSERT INTO eventforge_payments (event_id,vendor_id,amount,payment_at,note) VALUES (:event_id,:vendor,:amount,:at,:note)", {"event_id": event_id, "vendor": vendor_id, "amount": amount, "at": date_value(data["payment_at"], "payment_at") if data.get("payment_at") else datetime.now(timezone.utc), "note": data.get("note")}); execute(cursor, "UPDATE eventforge_vendors SET paid_amount=paid_amount+:amount WHERE id=:id", {"amount": amount, "id": vendor_id}); response.status = 201; return child(cursor, "eventforge_payments", event_id, payment_id)
+            payment_id = insert(cursor, "INSERT INTO eventforge_payments (event_id,vendor_id,amount,payment_at,note) VALUES (:event_id,:vendor,:amount,:at,:note)", {"event_id": event_id, "vendor": vendor_id, "amount": amount, "at": date_value(data["payment_at"], "payment_at") if data.get("payment_at") else datetime.now(timezone.utc), "note": data.get("note")}); execute(cursor, "UPDATE eventforge_vendors SET paid_amount=paid_amount+:amount WHERE id=:id", {"amount": amount, "id": vendor_id}); activity(cursor, event_id, user_id, "VENDOR_PAYMENT_CREATED"); response.status = 201; return child(cursor, "eventforge_payments", event_id, payment_id)
 
     @app.get("/api/events/<event_id:int>/notifications")
     @guarded
     def notifications(event_id):
         user_id = authenticate()
         with db.transaction() as connection:
-            cursor = connection.cursor(); event(cursor, event_id, user_id); result = page(cursor, "SELECT * FROM eventforge_notifications WHERE event_id=:event_id ORDER BY id DESC", {"event_id": event_id}); result["items"] = [dict(item, read=bool(item.pop("is_read"))) for item in result["items"]]; return result
+            cursor = connection.cursor(); event(cursor, event_id, user_id)
+            binds = {"event_id": event_id}; sql = "SELECT * FROM eventforge_notifications WHERE event_id=:event_id"
+            if request.query.get("read") is not None:
+                if request.query.read not in ("true", "false"): fail(422, "VALIDATION_ERROR", "read must be true or false")
+                sql += " AND read_at " + ("IS NOT NULL" if request.query.read == "true" else "IS NULL")
+            return page(cursor, sql + " ORDER BY id DESC", binds)
 
     @app.patch("/api/events/<event_id:int>/notifications/<notification_id:int>")
     @guarded
     def update_notification(event_id, notification_id):
         user_id = authenticate(); data = parse_body()
-        if "read" not in data and "is_read" not in data: fail(422, "VALIDATION_ERROR", "read is required")
-        read = data.get("read", data.get("is_read"))
+        if "read" not in data: fail(422, "VALIDATION_ERROR", "read is required")
+        read = data["read"]
         if type(read) is not bool: fail(422, "VALIDATION_ERROR", "read must be boolean")
         with db.transaction() as connection:
-            cursor = connection.cursor(); event(cursor, event_id, user_id); item = child(cursor, "eventforge_notifications", event_id, notification_id); execute(cursor, "UPDATE eventforge_notifications SET is_read=:read WHERE id=:id", {"read": 1 if read else 0, "id": notification_id}); return dict(child(cursor, "eventforge_notifications", event_id, notification_id), read=read)
+            cursor = connection.cursor(); event(cursor, event_id, user_id); child(cursor, "eventforge_notifications", event_id, notification_id)
+            execute(cursor, "UPDATE eventforge_notifications SET read_at=:read_at WHERE id=:id", {"read_at": datetime.now(timezone.utc) if read else None, "id": notification_id})
+            activity(cursor, event_id, user_id, "NOTIFICATION_READ_STATE_UPDATED")
+            return child(cursor, "eventforge_notifications", event_id, notification_id)
 
     @app.get("/api/events/<event_id:int>/activity")
     @guarded
